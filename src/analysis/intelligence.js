@@ -1,5 +1,11 @@
 'use strict';
 
+const {
+  getTechIntelligence,
+  findBestArchitecturePattern,
+  findIndustryBenchmark,
+  updateTechIntelligenceFromScan
+} = require('../db/intelligence');
 const logger = require('../utils/logger');
 
 // ─── ARCHITECTURE CLASSIFICATION ─────────────────────────────────────────────
@@ -80,7 +86,7 @@ const ARCHITECTURE_RULES = [
     description: 'Enterprise-grade CMS platform',
     match: (techs) => {
       const names = techs.map(t => t.name);
-      return names.includes('Drupal') || names.includes('Joomla') || names.includes('Sitecore');
+      return names.includes('Drupal') || names.includes('Joomla');
     },
     priority: 8
   },
@@ -91,7 +97,8 @@ const ARCHITECTURE_RULES = [
     match: (techs) => {
       const names = techs.map(t => t.name);
       return (
-        (names.includes('React') || names.includes('Angular') || names.includes('Vue.js') || names.includes('Svelte')) &&
+        (names.includes('React') || names.includes('Angular') ||
+          names.includes('Vue.js') || names.includes('Svelte')) &&
         !names.includes('Next.js') &&
         !names.includes('Nuxt.js') &&
         !names.includes('Remix') &&
@@ -148,7 +155,9 @@ const ARCHITECTURE_RULES = [
     description: 'Traditional server-rendered PHP application',
     match: (techs) => {
       const names = techs.map(t => t.name);
-      return names.includes('PHP') && !names.includes('WordPress') && !names.includes('Laravel');
+      return names.includes('PHP') &&
+        !names.includes('WordPress') &&
+        !names.includes('Laravel');
     },
     priority: 6
   },
@@ -176,378 +185,402 @@ function classifyArchitecture(technologies) {
       return { id: rule.id, name: rule.name, description: rule.description };
     }
   }
-  return { id: 'unknown', name: 'Unknown Architecture', description: 'Could not determine architecture from detected signals' };
+  return {
+    id: 'unknown',
+    name: 'Unknown Architecture',
+    description: 'Could not determine architecture from detected signals'
+  };
 }
 
-// ─── STRENGTHS ENGINE ────────────────────────────────────────────────────────
+// ─── KNOWLEDGE BASE STRENGTHS ─────────────────────────────────────────────────
 
-function generateStrengths(technologies, security, performance, seo, infrastructure) {
+async function generateStrengthsFromKnowledgeBase(technologies, security, performance, seo, infrastructure) {
   const strengths = [];
   const names = technologies.map(t => t.name);
-  const cats = technologies.map(t => t.category);
 
-  // CDN & Performance
-  if (names.includes('Cloudflare')) {
-    strengths.push('Cloudflare CDN provides global edge caching, DDoS protection, and automatic HTTPS — a best-in-class choice for performance and security');
-  }
-  if (names.includes('AWS CloudFront')) {
-    strengths.push('AWS CloudFront delivers content from 400+ edge locations worldwide, ensuring low latency for a global audience');
-  }
-  if (names.includes('Fastly')) {
-    strengths.push('Fastly edge cloud provides ultra-low latency delivery with instant cache purging capabilities — enterprise-grade CDN performance');
-  }
-  if (names.includes('Akamai')) {
-    strengths.push('Akamai Intelligent Edge Platform is the most battle-tested CDN in existence, trusted by the world\'s largest enterprises for reliability at scale');
-  }
-  if (names.includes('BunnyCDN')) {
-    strengths.push('BunnyCDN offers cost-effective global content delivery with strong performance metrics at a fraction of enterprise CDN costs');
-  }
+  const allIntelligence = await getTechIntelligence(null);
 
-  // Hosting
-  if (names.includes('Vercel')) {
-    strengths.push('Vercel hosting provides automatic preview deployments, edge functions, and zero-configuration deployment — optimal for Next.js applications');
-  }
-  if (names.includes('Netlify')) {
-    strengths.push('Netlify\'s global edge network, instant rollbacks, and built-in CI/CD pipeline make it an excellent choice for JAMstack deployments');
-  }
+  for (const tech of technologies) {
+    const intel = allIntelligence[tech.name];
+    if (!intel) continue;
 
-  // Modern Frameworks
-  if (names.includes('Next.js')) {
-    strengths.push('Next.js enables hybrid rendering — combining static generation, server-side rendering, and incremental static regeneration for optimal performance and SEO');
-  }
-  if (names.includes('Nuxt.js')) {
-    strengths.push('Nuxt.js provides automatic code splitting, server-side rendering, and a powerful module ecosystem built on Vue.js');
-  }
-  if (names.includes('Remix')) {
-    strengths.push('Remix focuses on web fundamentals and nested routing, delivering exceptional performance through intelligent data loading and progressive enhancement');
-  }
-  if (names.includes('Astro')) {
-    strengths.push('Astro\'s island architecture ships zero JavaScript by default, resulting in exceptionally fast page loads and strong Core Web Vitals scores');
-  }
-  if (names.includes('React')) {
-    strengths.push('React\'s component-based architecture enables highly maintainable, reusable UI code with a vast ecosystem of libraries and strong community support');
-  }
-  if (names.includes('Vue.js')) {
-    strengths.push('Vue.js offers an approachable learning curve with excellent performance, a progressive adoption model, and a well-structured component system');
-  }
-  if (names.includes('Svelte')) {
-    strengths.push('Svelte compiles away the framework at build time, shipping minimal JavaScript to the browser — resulting in outstanding runtime performance');
-  }
-  if (names.includes('Angular')) {
-    strengths.push('Angular provides a complete, opinionated framework with built-in TypeScript support, dependency injection, and enterprise-grade structure for large team development');
-  }
+    if (security && intel.security_impact && tech.confidence >= 0.7) {
+      const securityPositive = extractPositiveFromText(intel.security_impact);
+      if (securityPositive) strengths.push(securityPositive);
+    }
 
-  // Security
-  if (security && security.riskScore !== undefined) {
-    if (security.riskScore <= 0.15) {
-      strengths.push('Excellent security header configuration — CSP, HSTS, and all major security headers are properly implemented, demonstrating strong security hygiene');
-    } else if (security.riskScore <= 0.35) {
-      strengths.push('Good security posture with most critical security headers in place — site demonstrates awareness of browser-level security best practices');
+    if (performance && intel.performance_impact && tech.confidence >= 0.65) {
+      const perfPositive = extractPositiveFromText(intel.performance_impact);
+      if (perfPositive) strengths.push(perfPositive);
     }
   }
-  if (security && security.headers && security.headers.hsts && security.headers.hsts.status === 'present') {
-    strengths.push('HSTS enforced — all connections are forced to HTTPS, preventing protocol downgrade attacks and cookie hijacking');
+
+  if (security && security.riskScore !== undefined) {
+    if (security.riskScore <= 0.15) {
+      strengths.push('Excellent security header configuration — CSP, HSTS, and all major security headers are properly implemented, demonstrating strong security hygiene across the stack');
+    } else if (security.riskScore <= 0.30) {
+      strengths.push('Good security posture with most critical security headers in place — the team demonstrates awareness of browser-level security best practices');
+    }
   }
+
   if (security && security.wafDetected) {
-    strengths.push(`${security.wafDetected} provides active web application firewall protection, filtering malicious traffic before it reaches the origin server`);
+    strengths.push(`${security.wafDetected} provides active web application firewall protection — malicious requests, SQL injection attempts, and common attack patterns are filtered at the edge before reaching the origin server`);
   }
+
   if (security && security.botProtection) {
-    strengths.push(`${security.botProtection} bot protection is active, helping prevent automated abuse, credential stuffing, and scraping attacks`);
+    strengths.push(`${security.botProtection} bot protection is active — automated abuse, credential stuffing, and scraping attacks are actively mitigated`);
   }
 
-  // Performance
   if (performance && performance.fetchMs <= 300) {
-    strengths.push(`Exceptional server response time of ${performance.fetchMs}ms — well under the 300ms threshold for a fast TTFB (Time to First Byte)`);
-  } else if (performance && performance.fetchMs <= 800) {
-    strengths.push(`Good server response time of ${performance.fetchMs}ms — users will experience a responsive and snappy page load`);
+    strengths.push(`Exceptional server response time of ${performance.fetchMs}ms — well under the 300ms threshold Google uses to classify TTFB as fast, providing an excellent foundation for Core Web Vitals`);
+  } else if (performance && performance.fetchMs <= 600) {
+    strengths.push(`Strong server response time of ${performance.fetchMs}ms — users will experience a responsive page load and Core Web Vitals scores will not be penalised by server latency`);
   }
+
   if (performance && performance.compression && performance.compression.type === 'Brotli') {
-    strengths.push('Brotli compression is enabled — Brotli achieves 15-25% better compression than Gzip, significantly reducing transfer sizes and improving load times');
+    strengths.push('Brotli compression is active — Brotli achieves 15-25% better compression ratios than Gzip, meaningfully reducing transfer sizes for HTML, CSS, and JavaScript on every page load');
   } else if (performance && performance.compression && performance.compression.type === 'Gzip') {
-    strengths.push('Gzip compression is active — reducing HTML, CSS, and JavaScript transfer sizes for faster page loads');
+    strengths.push('Gzip compression is active — compressing text assets by 60-80% before transfer, significantly reducing page weight for users on slower connections');
   }
-  if (performance && performance.https && performance.https.https) {
-    strengths.push('Full HTTPS encryption is active across all content — essential for user trust, SEO ranking signals, and browser security indicators');
+
+  if (performance && performance.https && performance.https.https && performance.https.hsts) {
+    strengths.push('HTTPS with HSTS enforcement — all connections are encrypted and HTTP connections are automatically upgraded, preventing protocol downgrade attacks and ensuring data integrity');
+  } else if (performance && performance.https && performance.https.https) {
+    strengths.push('HTTPS encryption is active — user data is protected in transit and browsers display the security indicator that builds user trust');
   }
+
   if (performance && performance.caching && performance.caching.status === 'good') {
-    strengths.push('Aggressive caching strategy detected — long cache lifetimes reduce repeat visitor load times and reduce server load significantly');
+    strengths.push(`Effective caching strategy detected — ${performance.caching.detail}. Repeat visitors benefit from dramatically faster load times and server load is reduced significantly`);
   }
 
-  // SEO
-  if (seo && seo.seoScore >= 80) {
-    strengths.push(`Strong SEO implementation with a score of ${seo.seoScore}/100 — page title, description, canonical URL, Open Graph, and structured data are all properly configured`);
+  if (seo && seo.seoScore >= 85) {
+    strengths.push(`Outstanding SEO implementation with a score of ${seo.seoScore}/100 — page title, meta description, canonical URL, Open Graph, Twitter Card, and structured data are all comprehensively implemented`);
+  } else if (seo && seo.seoScore >= 70) {
+    strengths.push(`Strong SEO implementation with a score of ${seo.seoScore}/100 — core on-page SEO signals are properly configured, providing a solid foundation for organic search performance`);
   }
+
   if (seo && seo.structured && seo.structured.length > 0) {
-    strengths.push(`${seo.structured.length} structured data block${seo.structured.length > 1 ? 's' : ''} detected — rich snippets and enhanced search result appearance are enabled via schema.org markup`);
+    strengths.push(`${seo.structured.length} structured data block${seo.structured.length > 1 ? 's' : ''} detected — rich snippets and enhanced search result appearance are enabled via schema.org markup, improving click-through rates from Google`);
   }
+
   if (seo && seo.og && Object.keys(seo.og).length >= 4) {
-    strengths.push('Comprehensive Open Graph tags implemented — content will appear rich and well-formatted when shared on Facebook, LinkedIn, and messaging platforms');
+    strengths.push('Comprehensive Open Graph implementation — content appears rich and well-formatted when shared on Facebook, LinkedIn, WhatsApp, and messaging platforms, improving social media engagement');
   }
+
   if (seo && seo.twitter && Object.keys(seo.twitter).length >= 3) {
-    strengths.push('Twitter Card metadata fully configured — shared links will display rich previews with image, title, and description on Twitter and X');
+    strengths.push('Twitter Card metadata fully implemented — shared links display rich media previews on Twitter and X, with title, description, and image, improving click-through rates from social sharing');
   }
 
-  // Analytics & Monitoring
-  if (names.includes('Segment')) {
-    strengths.push('Segment customer data platform centralises all analytics and data routing — a sophisticated data architecture that enables consistent tracking across all tools');
-  }
-  if (names.includes('Sentry')) {
-    strengths.push('Sentry error monitoring provides real-time exception tracking and performance monitoring — essential for maintaining production application health');
-  }
-  if (names.includes('Datadog')) {
-    strengths.push('Datadog full-stack observability provides infrastructure metrics, APM, and log management — enterprise-grade monitoring and alerting');
-  }
-  if (names.includes('New Relic')) {
-    strengths.push('New Relic APM provides deep application performance monitoring with transaction tracing and anomaly detection');
-  }
-
-  // Payment
-  if (names.includes('Stripe')) {
-    strengths.push('Stripe payments integration provides best-in-class payment processing with PCI compliance handled automatically and a developer-friendly API');
-  }
-  if (names.includes('Paddle')) {
-    strengths.push('Paddle handles global payments, tax, and compliance as the merchant of record — reducing regulatory burden significantly for SaaS businesses');
-  }
-
-  // E-Commerce
-  if (names.includes('Algolia')) {
-    strengths.push('Algolia search delivers sub-10ms search results with typo tolerance and relevance tuning — significantly enhancing product discovery and user experience');
-  }
-
-  // CSS
-  if (names.includes('Tailwind CSS')) {
-    strengths.push('Tailwind CSS utility-first approach enables rapid UI development with consistent design tokens and minimal CSS bundle sizes through PurgeCSS');
-  }
-
-  // Infrastructure
   if (infrastructure && infrastructure.ips && infrastructure.ips.length > 1) {
-    strengths.push(`Multiple IP addresses detected (${infrastructure.ips.join(', ')}) — suggests load balancing or anycast routing for improved availability and redundancy`);
+    strengths.push(`Multiple IP addresses detected (${infrastructure.ips.join(', ')}) — indicates load balancing or anycast routing, improving availability and distributing traffic across multiple origin servers`);
   }
 
-  // Diversity
-  const uniqueCategories = new Set(cats);
-  if (uniqueCategories.size >= 6) {
-    strengths.push(`Mature technology ecosystem with ${technologies.length} detected technologies across ${uniqueCategories.size} categories — indicates a well-rounded, production-grade stack`);
+  const uniqueCategories = new Set(technologies.map(t => t.category));
+  if (uniqueCategories.size >= 7) {
+    strengths.push(`Mature and comprehensive technology ecosystem — ${technologies.length} technologies detected across ${uniqueCategories.size} categories, indicating a well-rounded production-grade stack with tooling for analytics, monitoring, security, and performance`);
   }
 
-  return strengths.slice(0, 12);
+  const monitoringTools = names.filter(n => ['Sentry', 'Datadog', 'New Relic', 'LogRocket', 'FullStory'].includes(n));
+  if (monitoringTools.length >= 2) {
+    strengths.push(`Comprehensive observability with ${monitoringTools.join(' and ')} — the engineering team has full visibility into errors, performance, and user experience in production`);
+  } else if (monitoringTools.length === 1) {
+    strengths.push(`${monitoringTools[0]} provides production error monitoring and performance visibility — issues are caught proactively before users report them`);
+  }
+
+  const analyticsTools = names.filter(n => ['Segment', 'Mixpanel', 'Amplitude', 'PostHog'].includes(n));
+  if (analyticsTools.length >= 1) {
+    strengths.push(`${analyticsTools.join(' and ')} provides sophisticated product analytics — the team has deep visibility into user behaviour, funnel performance, and feature adoption beyond basic page view tracking`);
+  }
+
+  return [...new Set(strengths)].slice(0, 12);
 }
 
-// ─── WEAKNESSES ENGINE ───────────────────────────────────────────────────────
+function extractPositiveFromText(text) {
+  if (!text) return null;
 
-function generateWeaknesses(technologies, security, performance, seo) {
+  const sentences = text.split(/\.\s+/);
+  for (const sentence of sentences) {
+    const lower = sentence.toLowerCase();
+    const isPositive = (
+      lower.includes('deliver') ||
+      lower.includes('provide') ||
+      lower.includes('enable') ||
+      lower.includes('ensure') ||
+      lower.includes('excellent') ||
+      lower.includes('best') ||
+      lower.includes('strong') ||
+      lower.includes('comprehensive') ||
+      lower.includes('automatic') ||
+      lower.includes('prevent') ||
+      lower.includes('protect')
+    );
+
+    const isNegative = (
+      lower.includes('trade-off') ||
+      lower.includes('however') ||
+      lower.includes('struggle') ||
+      lower.includes('vulnerable') ||
+      lower.includes('risk') ||
+      lower.includes('must be') ||
+      lower.includes('requires') ||
+      lower.includes('limitation')
+    );
+
+    if (isPositive && !isNegative && sentence.length > 40 && sentence.length < 250) {
+      return sentence.trim() + (sentence.endsWith('.') ? '' : '.');
+    }
+  }
+
+  return null;
+}
+
+// ─── KNOWLEDGE BASE WEAKNESSES ────────────────────────────────────────────────
+
+async function generateWeaknessesFromKnowledgeBase(technologies, security, performance, seo, industryBenchmark) {
   const weaknesses = [];
   const names = technologies.map(t => t.name);
 
-  // Security weaknesses
+  const allIntelligence = await getTechIntelligence(null);
+  for (const tech of technologies) {
+    const intel = allIntelligence[tech.name];
+    if (!intel || !intel.known_weaknesses) continue;
+
+    const relevantWeaknesses = intel.known_weaknesses.slice(0, 2);
+    for (const weakness of relevantWeaknesses) {
+      if (weakness && weakness.length > 20) {
+        weaknesses.push(`${tech.name}: ${weakness}`);
+      }
+    }
+  }
+
   if (security) {
-    if (security.headers && security.headers.csp && security.headers.csp.status === 'missing') {
-      weaknesses.push('Content Security Policy (CSP) header is absent — the site is vulnerable to cross-site scripting (XSS) attacks which can allow attackers to inject malicious scripts');
-    } else if (security.headers && security.headers.csp && security.headers.csp.status === 'warn') {
-      weaknesses.push(`CSP is present but weakened — ${security.headers.csp.detail}. A strict CSP is one of the most effective defences against XSS attacks`);
+    const headers = security.headers || {};
+
+    if (headers.csp && headers.csp.status === 'missing') {
+      weaknesses.push('Content Security Policy (CSP) header is absent — without CSP, cross-site scripting (XSS) attacks can inject malicious scripts that steal user credentials, session tokens, and sensitive data. CSP is one of the most effective browser-level defences available');
+    } else if (headers.csp && headers.csp.status === 'warn') {
+      weaknesses.push(`CSP is present but weakened — ${headers.csp.detail}. An unsafe-inline or unsafe-eval directive in CSP defeats much of its protective value against XSS attacks`);
     }
 
-    if (security.headers && security.headers.hsts && security.headers.hsts.status === 'missing') {
-      weaknesses.push('HSTS (HTTP Strict Transport Security) is not configured — browsers may allow HTTP connections, leaving users vulnerable to downgrade attacks and session hijacking');
+    if (headers.hsts && headers.hsts.status === 'missing') {
+      weaknesses.push('HSTS (HTTP Strict Transport Security) is not configured — browsers may accept HTTP connections, leaving users vulnerable to SSL stripping attacks where an attacker downgrades the connection to unencrypted HTTP');
     }
 
-    if (security.headers && security.headers.xFrameOptions && security.headers.xFrameOptions.status === 'missing') {
-      weaknesses.push('X-Frame-Options header is absent — the site may be vulnerable to clickjacking attacks where attackers embed the page in a hidden iframe to steal clicks');
+    if (headers.xFrameOptions && headers.xFrameOptions.status === 'missing') {
+      weaknesses.push('X-Frame-Options header is absent — the site can be embedded in a hidden iframe on a malicious page, enabling clickjacking attacks where users unknowingly interact with the site while their clicks are captured by the attacker');
     }
 
-    if (security.headers && security.headers.referrerPolicy && security.headers.referrerPolicy.status === 'missing') {
-      weaknesses.push('Referrer-Policy header is not set — the full page URL including query parameters may be leaked to third-party domains when users click external links');
+    if (headers.referrerPolicy && headers.referrerPolicy.status === 'missing') {
+      weaknesses.push('Referrer-Policy is not configured — the full page URL, including any query parameters containing user identifiers, session tokens, or search terms, may be leaked to third-party domains when users click external links');
     }
 
-    if (security.headers && security.headers.permissionsPolicy && security.headers.permissionsPolicy.status === 'missing') {
-      weaknesses.push('Permissions-Policy header is absent — browser features like camera, microphone, and geolocation are not explicitly restricted, expanding the potential attack surface');
+    if (headers.permissionsPolicy && headers.permissionsPolicy.status === 'missing') {
+      weaknesses.push('Permissions-Policy header is absent — browser features including camera, microphone, geolocation, payment, and USB access are not explicitly restricted, unnecessarily expanding the attack surface if any embedded script is compromised');
     }
 
-    if (security.riskScore >= 0.65) {
-      weaknesses.push(`High security risk score of ${Math.round(security.riskScore * 100)}% — multiple critical security headers are missing, leaving the site significantly exposed to common browser-level attacks`);
+    if (security.riskScore >= 0.60) {
+      weaknesses.push(`High overall security risk score of ${Math.round(security.riskScore * 100)}% — multiple critical security headers are missing. This site would fail a basic web security audit and is significantly more vulnerable to common browser-level attacks than industry peers`);
     }
 
     if (!security.wafDetected) {
-      weaknesses.push('No Web Application Firewall detected — malicious requests, SQL injection attempts, and common attack patterns are not being filtered at the edge before reaching the origin server');
+      weaknesses.push('No Web Application Firewall detected — malicious requests, SQL injection payloads, XSS attempts, and common attack patterns reach the origin server unfiltered. Adding Cloudflare WAF or equivalent protection at the edge significantly reduces risk');
     }
   }
 
-  // Performance weaknesses
   if (performance) {
     if (performance.fetchMs > 1500) {
-      weaknesses.push(`Slow server response time of ${performance.fetchMs}ms — anything above 800ms significantly impacts user experience, bounce rates, and Core Web Vitals scores`);
+      weaknesses.push(`Slow server response time of ${performance.fetchMs}ms — Google classifies TTFB above 800ms as needing improvement. This adds directly to Largest Contentful Paint (LCP), harming Core Web Vitals scores and search ranking`);
+    } else if (performance.fetchMs > 800) {
+      weaknesses.push(`Server response time of ${performance.fetchMs}ms is above Google\'s recommended 800ms threshold — optimising server response time through caching or CDN deployment would improve Core Web Vitals scores`);
     }
 
     if (performance.compression && performance.compression.type === 'None') {
-      weaknesses.push('No compression detected on responses — enabling Brotli or Gzip compression would reduce transfer sizes by 60-80%, dramatically improving load times for users on slower connections');
+      weaknesses.push('No compression detected on server responses — enabling Brotli or Gzip compression would reduce HTML, CSS, and JavaScript transfer sizes by 60-80%. At typical page sizes this saves 200-500KB per page load, with significant impact on users on slower connections');
     }
 
-    if (performance.caching && (performance.caching.status === 'missing' || performance.caching.status === 'nocache')) {
-      weaknesses.push('No effective caching strategy detected — every visitor request hits the origin server fresh, increasing latency, server load, and hosting costs unnecessarily');
+    if (performance.caching && performance.caching.status === 'missing') {
+      weaknesses.push('No effective HTTP caching strategy detected — every visitor loads all assets from the origin server on every visit. Proper cache headers for static assets would allow returning visitors to load pages significantly faster while reducing server load and bandwidth costs');
     }
 
     if (performance.https && !performance.https.https) {
-      weaknesses.push('Site is serving content over HTTP without encryption — this exposes user data to interception, causes Chrome to display "Not Secure" warnings, and is penalised by Google in search rankings');
+      weaknesses.push('Site is serving content over HTTP without encryption — Chrome and Firefox display "Not Secure" warnings, user data is transmitted in plain text, and Google applies a ranking penalty to non-HTTPS sites in search results');
     }
   }
 
-  // SEO weaknesses
   if (seo) {
     if (seo.title && seo.title.status === 'missing') {
-      weaknesses.push('No page title tag found — this is the single most important on-page SEO element and its absence will severely harm search engine visibility and click-through rates');
+      weaknesses.push('No page title tag found — the title tag is the single most important on-page SEO element. Its absence means search engines have no primary signal for the page\'s topic, severely limiting organic search visibility');
     } else if (seo.title && seo.title.status === 'warn') {
-      weaknesses.push(`Page title issue: ${seo.title.detail} — title length directly affects how search engines display and rank the page in results`);
+      weaknesses.push(`Page title issue detected: ${seo.title.detail} — title length and relevance directly affect how search engines display the page in results and how users decide whether to click`);
     }
 
     if (seo.description && seo.description.status === 'missing') {
-      weaknesses.push('Meta description is absent — while not a direct ranking factor, missing descriptions result in search engines auto-generating snippets that are often irrelevant and reduce click-through rates');
-    } else if (seo.description && seo.description.status === 'warn') {
-      weaknesses.push(`Meta description issue: ${seo.description.detail}`);
+      weaknesses.push('Meta description is absent — search engines auto-generate snippets when descriptions are missing, often pulling irrelevant text. Well-crafted meta descriptions improve click-through rates from search results by 5-15%');
     }
 
     if (seo.canonical && seo.canonical.status === 'missing') {
-      weaknesses.push('No canonical URL tag — without a canonical tag, search engines may index multiple versions of the same page (http vs https, www vs non-www) causing duplicate content penalties');
+      weaknesses.push('No canonical URL specified — without a canonical tag, search engines may index multiple URL variations (HTTP vs HTTPS, www vs non-www, trailing slash variations) as duplicate content, diluting page authority across multiple URLs');
     }
 
     if (seo.og && Object.keys(seo.og).length === 0) {
-      weaknesses.push('Open Graph tags are missing — shared links on Facebook, LinkedIn, and messaging apps will display as plain text without images or formatted previews, significantly reducing engagement');
-    }
-
-    if (seo.twitter && Object.keys(seo.twitter).length === 0) {
-      weaknesses.push('Twitter Card tags are absent — shared links on Twitter and X will not display rich media previews, reducing social media click-through rates');
+      weaknesses.push('Open Graph tags are completely absent — when this site is shared on Facebook, LinkedIn, WhatsApp, and iMessage, links display as plain text without images, titles, or formatted previews. This significantly reduces click-through rates from social sharing');
     }
 
     if (seo.structured && seo.structured.length === 0) {
-      weaknesses.push('No structured data (JSON-LD / schema.org) detected — the site is missing out on rich snippets in Google search results such as star ratings, FAQs, breadcrumbs, and product information');
+      weaknesses.push('No structured data (JSON-LD schema.org markup) detected — the site is missing eligibility for Google rich results including star ratings, FAQs, breadcrumbs, product information, and article dates. Rich results typically have 20-30% higher click-through rates than standard results');
     }
 
     if (seo.headings && seo.headings.h1 && seo.headings.h1.length === 0) {
-      weaknesses.push('No H1 heading found — the primary heading is a critical SEO signal that tells search engines what the page is about. Every page should have exactly one H1');
+      weaknesses.push('No H1 heading found on this page — the H1 is a primary SEO signal that communicates the page\'s main topic to search engines. Every page should have exactly one H1 that contains the primary target keyword');
     }
 
     if (seo.headings && seo.headings.h1 && seo.headings.h1.length > 1) {
-      weaknesses.push(`Multiple H1 headings detected (${seo.headings.h1.length}) — having more than one H1 dilutes the primary topic signal and can confuse search engine crawlers`);
+      weaknesses.push(`${seo.headings.h1.length} H1 headings detected — multiple H1 tags dilute the primary topic signal for search engines. Each page should have exactly one H1 with remaining headings using H2 and H3 tags`);
     }
 
     if (seo.images && seo.images.withoutAlt > 0) {
-      weaknesses.push(`${seo.images.withoutAlt} image${seo.images.withoutAlt > 1 ? 's are' : ' is'} missing alt text — images without alt attributes harm accessibility for screen reader users and miss keyword opportunities for image search`);
-    }
-
-    if (seo.viewport && seo.viewport.status === 'missing') {
-      weaknesses.push('Viewport meta tag is absent — the site may not render correctly on mobile devices, harming the mobile user experience and Google\'s mobile-first indexing');
+      weaknesses.push(`${seo.images.withoutAlt} image${seo.images.withoutAlt > 1 ? 's are' : ' is'} missing alt text — images without alt attributes are invisible to screen readers (accessibility failure) and represent missed keyword opportunities for image search. WCAG 2.1 requires alt text on all informational images`);
     }
 
     if (seo.seoScore < 40) {
-      weaknesses.push(`Low SEO score of ${seo.seoScore}/100 — significant on-page SEO improvements are needed across multiple dimensions to compete effectively in organic search`);
+      weaknesses.push(`Low overall SEO score of ${seo.seoScore}/100 — significant on-page SEO improvements are needed across multiple dimensions. Sites in this score range typically struggle to rank competitively in organic search without substantial SEO investment`);
     }
   }
 
-  // Technology-specific weaknesses
+  if (industryBenchmark) {
+    for (const industryWeakness of (industryBenchmark.common_weaknesses || []).slice(0, 2)) {
+      weaknesses.push(`Industry pattern: ${industryWeakness}`);
+    }
+  }
+
   if (names.includes('WordPress') && !names.includes('Cloudflare') && !names.includes('Fastly') && !names.includes('Akamai')) {
-    weaknesses.push('WordPress installation without a CDN detected — WordPress sites without a CDN are vulnerable to traffic spikes, slower for international visitors, and less protected against DDoS attacks');
+    weaknesses.push('WordPress without a CDN — WordPress\'s database-driven rendering is significantly slower than static alternatives. A CDN layer (Cloudflare free tier) would cache full pages at the edge, reducing server load dramatically and improving performance for international visitors');
   }
 
-  if (names.includes('jQuery') && !names.includes('React') && !names.includes('Vue.js') && !names.includes('Angular')) {
-    weaknesses.push('jQuery without a modern framework suggests an older architecture that may carry technical debt, security vulnerabilities from outdated plugins, and maintenance challenges');
+  if (names.includes('jQuery') && !names.includes('React') && !names.includes('Vue.js') && !names.includes('Angular') && !names.includes('Svelte')) {
+    weaknesses.push('jQuery without a modern framework suggests an older front-end architecture. jQuery sites frequently accumulate plugin dependencies with security vulnerabilities, and the development patterns make performance optimisation and code organisation increasingly difficult over time');
   }
 
-  if (names.includes('Wix') || names.includes('Squarespace')) {
-    const platform = names.includes('Wix') ? 'Wix' : 'Squarespace';
-    weaknesses.push(`${platform} platform limits technical customisation, SEO control, and performance optimisation compared to custom-built alternatives — migration to a more flexible platform may be necessary as the business scales`);
-  }
-
-  return weaknesses.slice(0, 12);
+  return [...new Set(weaknesses)].slice(0, 12);
 }
 
-// ─── MATURITY SCORE ENGINE ───────────────────────────────────────────────────
+// ─── MATURITY SCORE ───────────────────────────────────────────────────────────
 
 function calculateMaturityScore(technologies, security, performance, seo, infrastructure) {
   let score = 0;
   const names = technologies.map(t => t.name);
 
-  // Modern framework (max 15)
   const modernFrameworks = ['Next.js', 'Nuxt.js', 'Remix', 'Astro', 'SvelteKit'];
   const decentFrameworks = ['React', 'Vue.js', 'Angular', 'Svelte', 'Ember.js'];
   if (modernFrameworks.some(f => names.includes(f))) score += 15;
   else if (decentFrameworks.some(f => names.includes(f))) score += 10;
-  else if (names.includes('jQuery')) score += 3;
+  else if (names.includes('jQuery')) score += 2;
 
-  // CDN (max 10)
   const enterpriseCDNs = ['Cloudflare', 'Akamai', 'Fastly', 'AWS CloudFront'];
   const standardCDNs = ['BunnyCDN', 'KeyCDN'];
   if (enterpriseCDNs.some(c => names.includes(c))) score += 10;
   else if (standardCDNs.some(c => names.includes(c))) score += 6;
 
-  // Security headers (max 15)
   if (security) {
     if (security.riskScore <= 0.10) score += 15;
-    else if (security.riskScore <= 0.25) score += 10;
-    else if (security.riskScore <= 0.50) score += 5;
-    else score += 0;
+    else if (security.riskScore <= 0.20) score += 11;
+    else if (security.riskScore <= 0.35) score += 7;
+    else if (security.riskScore <= 0.50) score += 3;
   }
 
-  // WAF (max 5)
   if (security && security.wafDetected) score += 5;
 
-  // HTTPS (max 5)
-  if (performance && performance.https && performance.https.https) score += 5;
-  if (performance && performance.https && performance.https.hsts) score += 2;
-
-  // Performance (max 10)
   if (performance) {
+    if (performance.https && performance.https.https) score += 5;
+    if (performance.https && performance.https.hsts) score += 3;
+
     if (performance.fetchMs <= 300) score += 10;
     else if (performance.fetchMs <= 600) score += 7;
     else if (performance.fetchMs <= 1000) score += 4;
     else if (performance.fetchMs <= 2000) score += 2;
 
-    if (performance.compression && performance.compression.type === 'Brotli') score += 3;
+    if (performance.compression && performance.compression.type === 'Brotli') score += 4;
     else if (performance.compression && performance.compression.type === 'Gzip') score += 2;
 
-    if (performance.caching && performance.caching.status === 'good') score += 3;
+    if (performance.caching && performance.caching.status === 'good') score += 4;
+    else if (performance.caching && performance.caching.status === 'warn') score += 2;
   }
 
-  // SEO (max 10)
   if (seo) {
-    if (seo.seoScore >= 80) score += 10;
-    else if (seo.seoScore >= 60) score += 7;
-    else if (seo.seoScore >= 40) score += 4;
+    if (seo.seoScore >= 85) score += 10;
+    else if (seo.seoScore >= 70) score += 7;
+    else if (seo.seoScore >= 50) score += 4;
     else score += 1;
   }
 
-  // Analytics (max 5)
-  const analyticsTools = ['Google Analytics', 'Segment', 'Mixpanel', 'Plausible', 'Fathom Analytics'];
+  const analyticsTools = ['Google Analytics', 'Segment', 'Mixpanel', 'Plausible', 'Fathom Analytics', 'Amplitude', 'PostHog'];
   if (analyticsTools.some(a => names.includes(a))) score += 5;
 
-  // Error monitoring (max 5)
-  const monitoringTools = ['Sentry', 'Datadog', 'New Relic'];
-  if (monitoringTools.some(m => names.includes(m))) score += 5;
+  const monitoringTools = ['Sentry', 'Datadog', 'New Relic', 'LogRocket', 'FullStory'];
+  if (monitoringTools.filter(m => names.includes(m)).length >= 2) score += 6;
+  else if (monitoringTools.some(m => names.includes(m))) score += 4;
 
-  // Payment sophistication (max 5)
   if (names.includes('Stripe') || names.includes('Paddle')) score += 5;
-  else if (names.includes('PayPal') || names.includes('Square')) score += 3;
+  else if (names.includes('PayPal') || names.includes('Square') ||
+    names.includes('Paystack') || names.includes('Flutterwave')) score += 3;
 
-  // Structured data (max 5)
-  if (seo && seo.structured && seo.structured.length > 0) score += 5;
+  if (seo && seo.structured && seo.structured.length > 0) score += 4;
 
-  // Technology breadth (max 5)
   const uniqueCategories = new Set(technologies.map(t => t.category));
-  if (uniqueCategories.size >= 8) score += 5;
-  else if (uniqueCategories.size >= 5) score += 3;
-  else if (uniqueCategories.size >= 3) score += 1;
+  if (uniqueCategories.size >= 8) score += 4;
+  else if (uniqueCategories.size >= 5) score += 2;
 
   return Math.min(Math.round(score), 100);
 }
 
 // ─── SUMMARY GENERATOR ───────────────────────────────────────────────────────
 
-function generateSummary(technologies, architecture, cluster, security, performance, seo) {
+async function generateSummary(technologies, architecture, cluster, security, performance, seo, architecturePattern, industryBenchmark) {
   const names = technologies.map(t => t.name);
   const categories = [...new Set(technologies.map(t => t.category))];
 
-  let summary = '';
+  if (architecturePattern && architecturePattern.summary) {
+    let summary = architecturePattern.summary;
 
-  // Opening — architecture and primary stack
-  summary += `This website runs a ${architecture.name} architecture`;
+    if (architecturePattern.real_world_examples && architecturePattern.real_world_examples.length > 0) {
+      const examples = architecturePattern.real_world_examples.slice(0, 3).join(', ');
+      summary += ` Companies using this exact combination include ${examples}.`;
+    }
+
+    if (performance && performance.fetchMs) {
+      if (performance.fetchMs <= 300) {
+        summary += ` Server response time of ${performance.fetchMs}ms is exceptional.`;
+      } else if (performance.fetchMs > 1500) {
+        summary += ` Server response time of ${performance.fetchMs}ms is above recommended thresholds and warrants investigation.`;
+      }
+    }
+
+    if (security && security.riskScore !== undefined) {
+      if (security.riskScore <= 0.20) {
+        summary += ' Security header configuration is strong.';
+      } else if (security.riskScore >= 0.60) {
+        summary += ' Security header implementation needs significant improvement.';
+      }
+    }
+
+    if (industryBenchmark) {
+      const maturityScore = calculateMaturityScore(technologies, security, performance, seo, null);
+      const diff = maturityScore - industryBenchmark.average_maturity_score;
+      if (diff >= 15) {
+        summary += ` This stack scores ${diff} points above the ${industryBenchmark.industry} industry average maturity score of ${industryBenchmark.average_maturity_score} — placing it in the top tier of its peer group.`;
+      } else if (diff <= -15) {
+        summary += ` This stack scores ${Math.abs(diff)} points below the ${industryBenchmark.industry} industry average maturity score of ${industryBenchmark.average_maturity_score} — indicating room for improvement relative to peers.`;
+      } else {
+        summary += ` Maturity is broadly in line with the ${industryBenchmark.industry} industry average of ${industryBenchmark.average_maturity_score}.`;
+      }
+    }
+
+    summary += ` ${technologies.length} technolog${technologies.length === 1 ? 'y was' : 'ies were'} detected across ${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}.`;
+
+    return summary;
+  }
+
+  let summary = `This website runs a ${architecture.name} architecture`;
 
   if (names.includes('Next.js')) summary += ' built on Next.js with React';
   else if (names.includes('Nuxt.js')) summary += ' built on Nuxt.js with Vue.js';
@@ -567,17 +600,16 @@ function generateSummary(technologies, architecture, cluster, security, performa
   else if (names.includes('Squarespace')) summary += ' built on Squarespace';
   else if (names.includes('Wix')) summary += ' built on Wix';
 
-  // CDN / Hosting
   if (names.includes('Cloudflare') && names.includes('Vercel')) {
-    summary += ', deployed on Vercel with Cloudflare providing edge security and CDN.';
+    summary += ', deployed on Vercel with Cloudflare providing edge security and global CDN.';
   } else if (names.includes('Cloudflare') && names.includes('Netlify')) {
-    summary += ', deployed on Netlify with Cloudflare CDN and security at the edge.';
+    summary += ', deployed on Netlify with Cloudflare CDN and DDoS protection at the edge.';
   } else if (names.includes('Vercel')) {
     summary += ', deployed on Vercel\'s global edge network.';
   } else if (names.includes('Netlify')) {
     summary += ', deployed on Netlify\'s global CDN.';
   } else if (names.includes('Cloudflare')) {
-    summary += ', protected and accelerated by Cloudflare\'s global network.';
+    summary += ', protected and accelerated by Cloudflare\'s global network of 300+ edge locations.';
   } else if (names.includes('AWS')) {
     summary += ', hosted on Amazon Web Services infrastructure.';
   } else if (names.includes('Google Cloud')) {
@@ -588,96 +620,146 @@ function generateSummary(technologies, architecture, cluster, security, performa
     summary += '.';
   }
 
-  // Styling
   if (names.includes('Tailwind CSS')) {
-    summary += ' The UI is built with Tailwind CSS utility classes.';
+    summary += ' The UI is built with Tailwind CSS utility classes for consistent, performance-optimised styling.';
   } else if (names.includes('Bootstrap')) {
-    summary += ' The UI uses Bootstrap for responsive layout and components.';
+    summary += ' The UI uses Bootstrap for responsive layout and pre-built component patterns.';
   } else if (names.includes('Material UI')) {
-    summary += ' The UI is built with Material UI component library.';
+    summary += ' The UI is built with Material UI\'s React component library following Google\'s Material Design system.';
   }
 
-  // Analytics & Business Tools
-  const analyticsCount = names.filter(n => ['Google Analytics', 'Segment', 'Mixpanel', 'Hotjar', 'Plausible'].includes(n)).length;
-  if (analyticsCount >= 2) {
-    summary += ` A sophisticated analytics stack with ${analyticsCount} tools provides comprehensive user behaviour insights.`;
-  } else if (names.includes('Google Analytics')) {
-    summary += ' Google Analytics tracks visitor behaviour and conversions.';
-  } else if (names.includes('Segment')) {
-    summary += ' Segment provides centralised customer data routing and analytics.';
+  const analyticsNames = names.filter(n =>
+    ['Google Analytics', 'Segment', 'Mixpanel', 'Amplitude', 'PostHog', 'Plausible'].includes(n)
+  );
+  if (analyticsNames.length >= 2) {
+    summary += ` A sophisticated analytics stack with ${analyticsNames.join(' and ')} provides comprehensive user behaviour tracking and data routing.`;
+  } else if (analyticsNames.length === 1) {
+    summary += ` ${analyticsNames[0]} provides visitor analytics and behaviour tracking.`;
   }
 
-  // Support
-  if (names.includes('Intercom')) {
-    summary += ' Intercom powers customer messaging and support.';
-  } else if (names.includes('Zendesk')) {
-    summary += ' Zendesk handles customer support operations.';
-  } else if (names.includes('Crisp')) {
-    summary += ' Crisp live chat provides real-time customer support.';
-  }
-
-  // Payment
   if (names.includes('Stripe')) {
-    summary += ' Stripe powers payment processing.';
+    summary += ' Stripe powers payment processing with PCI-compliant card tokenisation.';
   } else if (names.includes('Paddle')) {
-    summary += ' Paddle handles payments and subscription management.';
-  } else if (names.includes('PayPal')) {
-    summary += ' PayPal provides payment options.';
+    summary += ' Paddle handles payments and subscription management as merchant of record.';
+  } else if (names.includes('Paystack')) {
+    summary += ' Paystack provides African market payment processing.';
+  } else if (names.includes('Flutterwave')) {
+    summary += ' Flutterwave enables payments across African markets.';
   }
 
-  // Security & Monitoring
+  if (names.includes('Intercom')) {
+    summary += ' Intercom powers in-product customer messaging and support.';
+  } else if (names.includes('Zendesk')) {
+    summary += ' Zendesk handles customer support operations and ticketing.';
+  } else if (names.includes('Crisp')) {
+    summary += ' Crisp provides live chat and customer support.';
+  }
+
   if (names.includes('Sentry')) {
-    summary += ' Sentry provides real-time error monitoring.';
+    summary += ' Sentry monitors production errors and performance in real time.';
   }
+
   if (security && security.riskScore <= 0.20) {
-    summary += ' Security headers are well configured.';
-  } else if (security && security.riskScore >= 0.65) {
-    summary += ' Security header configuration needs significant improvement.';
+    summary += ' Security headers are comprehensively implemented.';
+  } else if (security && security.riskScore >= 0.60) {
+    summary += ' Security header configuration requires significant improvement.';
   }
 
-  // SEO
-  if (seo && seo.seoScore >= 80) {
-    summary += ' On-page SEO is comprehensively implemented.';
-  } else if (seo && seo.seoScore < 40) {
-    summary += ' On-page SEO requires attention.';
+  if (industryBenchmark) {
+    const maturityScore = calculateMaturityScore(technologies, security, performance, seo, null);
+    const diff = maturityScore - industryBenchmark.average_maturity_score;
+    if (diff >= 15) {
+      summary += ` Engineering maturity is ${diff} points above the ${industryBenchmark.industry} industry average.`;
+    } else if (diff <= -10) {
+      summary += ` Engineering maturity is below the ${industryBenchmark.industry} industry average of ${industryBenchmark.average_maturity_score}.`;
+    }
   }
 
-  // Technology count
-  summary += ` In total, ${technologies.length} technolog${technologies.length === 1 ? 'y was' : 'ies were'} detected across ${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}.`;
+  summary += ` In total ${technologies.length} technolog${technologies.length === 1 ? 'y was' : 'ies were'} detected across ${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}.`;
 
   return summary;
 }
 
 // ─── MASTER INTELLIGENCE FUNCTION ────────────────────────────────────────────
 
-function generateIntelligence(technologies, security, performance, seo, infrastructure, cluster) {
+async function generateIntelligence(technologies, security, performance, seo, infrastructure, cluster) {
   try {
-    logger.info('Generating intelligence analysis');
+    logger.info('Generating intelligence analysis from knowledge base');
 
     if (!technologies || technologies.length === 0) {
       return {
         architecture: { id: 'unknown', name: 'Unknown', description: 'No technologies detected' },
-        summary: 'Insufficient data to generate an intelligence report. No technologies were detected on this website.',
+        summary: 'Insufficient data to generate an intelligence report. No technologies were detected — the site may be behind authentication, bot protection, or returning an error page.',
         strengths: [],
-        weaknesses: ['No technologies could be detected — the site may be behind a login wall, bot protection, or returning an error page'],
-        maturityScore: 0
+        weaknesses: ['No technologies could be detected — the site may be behind a login wall, presenting a bot challenge page, or returning an error'],
+        maturityScore: 0,
+        industryComparison: null
       };
     }
 
     const architecture = classifyArchitecture(technologies);
-    const strengths = generateStrengths(technologies, security, performance, seo, infrastructure);
-    const weaknesses = generateWeaknesses(technologies, security, performance, seo);
-    const maturityScore = calculateMaturityScore(technologies, security, performance, seo, infrastructure);
-    const summary = generateSummary(technologies, architecture, cluster, security, performance, seo);
 
-    logger.info(`Intelligence generated — Architecture: ${architecture.name}, Maturity: ${maturityScore}, Strengths: ${strengths.length}, Weaknesses: ${weaknesses.length}`);
+    const [
+      architecturePattern,
+      industryBenchmark,
+      strengths,
+      weaknesses
+    ] = await Promise.all([
+      findBestArchitecturePattern(technologies),
+      findIndustryBenchmark(cluster?.name || ''),
+      generateStrengthsFromKnowledgeBase(technologies, security, performance, seo, infrastructure),
+      generateWeaknessesFromKnowledgeBase(technologies, security, performance, seo,
+        await findIndustryBenchmark(cluster?.name || ''))
+    ]);
+
+    const maturityScore = calculateMaturityScore(
+      technologies, security, performance, seo, infrastructure
+    );
+
+    const summary = await generateSummary(
+      technologies, architecture, cluster,
+      security, performance, seo,
+      architecturePattern, industryBenchmark
+    );
+
+    let industryComparison = null;
+    if (industryBenchmark) {
+      const diff = maturityScore - industryBenchmark.average_maturity_score;
+      industryComparison = {
+        industry: industryBenchmark.industry,
+        industryAverage: industryBenchmark.average_maturity_score,
+        thisScore: maturityScore,
+        difference: diff,
+        position: diff >= 15 ? 'above_average' : diff <= -15 ? 'below_average' : 'average',
+        risingTechnologies: industryBenchmark.rising_technologies || [],
+        decliningTechnologies: industryBenchmark.declining_technologies || [],
+        notableCompanies: industryBenchmark.notable_companies || []
+      };
+    }
+
+    updateTechIntelligenceFromScan(technologies).catch(err => {
+      logger.warn(`Background tech intelligence update error: ${err.message}`);
+    });
+
+    logger.info(`Intelligence generated — Architecture: ${architecture.name}, Maturity: ${maturityScore}, Strengths: ${strengths.length}, Weaknesses: ${weaknesses.length}, Pattern: ${architecturePattern?.pattern_id || 'none'}, Industry: ${industryBenchmark?.industry || 'none'}`);
 
     return {
       architecture,
       summary,
       strengths,
       weaknesses,
-      maturityScore
+      maturityScore,
+      architecturePattern: architecturePattern ? {
+        id: architecturePattern.pattern_id,
+        name: architecturePattern.architecture_type,
+        realWorldExamples: architecturePattern.real_world_examples || [],
+        performanceProfile: architecturePattern.performance_profile,
+        costProfile: architecturePattern.cost_profile,
+        scalabilityProfile: architecturePattern.scalability_profile,
+        typicalTeamSize: architecturePattern.typical_team_size,
+        typicalCompanyStage: architecturePattern.typical_company_stage
+      } : null,
+      industryComparison
     };
 
   } catch (err) {
@@ -687,7 +769,8 @@ function generateIntelligence(technologies, security, performance, seo, infrastr
       summary: 'An error occurred while generating the intelligence report.',
       strengths: [],
       weaknesses: [],
-      maturityScore: 0
+      maturityScore: 0,
+      industryComparison: null
     };
   }
 }
