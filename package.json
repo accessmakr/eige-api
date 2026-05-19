@@ -1,12 +1,23 @@
 {
   "name": "eige-api",
-  "version": "1.0.0",
-  "description": "EIGE v10 Intelligence Engine — Website Tech Stack Analysis API",
+  "version": "10.0.0",
+  "description": "EIGE v10 Intelligence Engine — Website Technology Stack Analysis API. Detects 100+ technologies, classifies ecosystem archetypes, generates knowledge-base-powered intelligence reports, and self-improves through a quality-gated adaptive learning system.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "seed": "node scripts/seed_patterns.js && node scripts/seed_clusters.js"
+    "seed:patterns": "node scripts/seed_patterns.js",
+    "seed:clusters": "node scripts/seed_clusters.js",
+    "seed:intelligence": "node scripts/seed_intelligence.js",
+    "seed:all": "node scripts/seed_patterns.js && node scripts/seed_clusters.js && node scripts/seed_intelligence.js",
+    "seed:verify": "node scripts/verify_seed.js",
+    "db:migrate": "echo 'Run SQL migrations manually in Supabase SQL Editor — see sql/ directory'",
+    "health": "curl -s http://localhost:8080/health | node -e \"process.stdin.resume(); let d=''; process.stdin.on('data', c => d+=c); process.stdin.on('end', () => console.log(JSON.stringify(JSON.parse(d), null, 2)))\"",
+    "status": "curl -s http://localhost:8080/status | node -e \"process.stdin.resume(); let d=''; process.stdin.on('data', c => d+=c); process.stdin.on('end', () => console.log(JSON.stringify(JSON.parse(d), null, 2)))\""
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
@@ -19,8 +30,32 @@
   "devDependencies": {
     "nodemon": "^3.0.2"
   },
-  "engines": {
-    "node": ">=18.0.0"
+  "nodemonConfig": {
+    "watch": [
+      "src",
+      "scripts",
+      ".env"
+    ],
+    "ext": "js,json",
+    "ignore": [
+      "node_modules",
+      "*.test.js"
+    ],
+    "delay": 1000
   },
-  "license": "ISC"
-}
+  "keywords": [
+    "web-technology-detection",
+    "stack-analysis",
+    "fingerprinting",
+    "ecosystem-intelligence",
+    "cdn-detection",
+    "security-audit",
+    "seo-analysis"
+  ],
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/accessmakr/eige-api"
+  },
+  "author": "accessmakr",
+  "private": true
