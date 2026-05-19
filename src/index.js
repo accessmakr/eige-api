@@ -349,6 +349,11 @@ function startServer() {
 
     startLearningSchedule();
 
+    const { runAutoSeed } = require('./startup/seed');
+    runAutoSeed().catch(err => {
+      logger.warn(`Auto-seed error: ${err.message}`);
+    });
+
     logger.info('EIGE v10 is fully operational');
   });
 
