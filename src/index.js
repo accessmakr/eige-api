@@ -14,6 +14,7 @@ const rateLimitMiddleware = require('./middleware/rateLimit');
 const apiRouter = require('./routes/api');
 const healthRouter = require('./routes/health');
 const logger = require('./utils/logger');
+const aiAwarenessHandler = require('./handlers/aiAwareness');
 const { startLearningSchedule, getLearningJobStatus } = require('./jobs/learning');
 
 // ─── ENVIRONMENT VALIDATION ───────────────────────────────────────────────────
@@ -160,6 +161,7 @@ app.use((req, res, next) => {
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter);
+app.post('/api/ai-awareness', aiAwarenessHandler);
 app.use('/api', apiRouter);
 
 // ─── SERVER STATUS ENDPOINT ───────────────────────────────────────────────────
