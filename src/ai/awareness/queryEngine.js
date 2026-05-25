@@ -3,21 +3,203 @@
 const logger = require('../../utils/logger');
 
 // ─── API ENDPOINTS ────────────────────────────────────────────────────────────
-const GROQ_API_URL   = 'https://api.groq.com/openai/v1/chat/completions';
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
-const ANTHROPIC_URL  = 'https://api.anthropic.com/v1/messages';
 
-// ─── MODEL IDENTIFIERS ────────────────────────────────────────────────────────
-const MODELS = {
-  meta:    'llama-3.1-70b-versatile',
-  mistral: 'mixtral-8x7b-32768',
-  google:  'gemini-1.5-flash',
+const GROQ_API_URL        = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODELS_URL     = 'https://api.groq.com/openai/v1/models';
+const GEMINI_BASE_URL     = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_MODELS_URL   = `${GEMINI_BASE_URL}/models`;
+const OPENAI_API_URL      = 'https://api.openai.com/v1/chat/completions';
+const ANTHROPIC_URL       = 'https://api.anthropic.com/v1/messages';
+
+// ─── MODEL PREFERENCE LISTS ───────────────────────────────────────────────────
+// Ordered best-first. Auto-detection picks the first entry that the provider
+// actually has live. If none match, the last entry is used as a hard fallback
+// (the provider will then return a proper error rather than a silent wrong model).
+//
+// Update these lists as providers deprecate/add models — the runtime resolver
+// means no code changes are needed elsewhere in the system.
+
+const GROQ_META_PREFERENCE = [
+  'llama-3.3-70b-versatile',   // current flagship
+  'llama-3.1-70b-versatile',   // previous flagship (may still be live)
+  'llama3-70b-8192',           // older alias
+  'llama-3.1-8b-instant',      // fallback if 70b unavailable
+  'llama3-8b-8192'             // last-resort fallback
+];
+
+const GROQ_MISTRAL_PREFERENCE = [
+  'gemma2-9b-it',              // distinct model identity — Google Gemma via Groq
+  'llama-3.1-8b-instant',      // fast, distinct from the 70b meta slot
+  'llama3-8b-8192',            // older alias
+  'mixtral-8x7b-32768'         // original — kept last; will fail if decommissioned
+];
+
+const GEMINI_PREFERENCE = [
+  'gemini-2.0-flash',          // current stable fast model
+  'gemini-2.5-flash',          // preview/latest
+  'gemini-2.0-flash-lite',     // lighter variant
+  'gemini-1.5-flash',          // previous generation (may still be live)
+  'gemini-1.0-pro'             // last-resort fallback
+];
+
+// Static models (user-supplied keys — no auto-detect needed)
+const STATIC_MODELS = {
   chatgpt: 'gpt-4o',
   claude:  'claude-3-5-sonnet-20241022'
 };
 
+// ─── MODEL RESOLUTION CACHE ───────────────────────────────────────────────────
+// Resolved once per process lifetime. Avoids a model-list API call on every scan.
+// Null = not yet resolved. String = resolved model id.
+
+const _resolvedModels = {
+  meta:    null,
+  mistral: null,
+  google:  null
+};
+
+// ─── GROQ MODEL RESOLVER ──────────────────────────────────────────────────────
+/**
+ * Fetch the live Groq model list and select the best available model from a
+ * preference-ranked list.
+ *
+ * @param {string[]} preferenceList - ordered best-first
+ * @param {string}   groqKey
+ * @param {string}   slotLabel      - for logging only
+ * @returns {Promise<string>}       - resolved model id
+ */
+async function resolveGroqModel(preferenceList, groqKey, slotLabel) {
+  try {
+    const response = await fetch(GROQ_MODELS_URL, {
+      method:  'GET',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+        'Content-Type':  'application/json'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      logger.warn(`[ModelResolver/${slotLabel}] Models endpoint returned ${response.status} — using first preference`);
+      return preferenceList[0];
+    }
+
+    const data = await response.json().catch(() => null);
+    const liveIds = new Set(
+      (data?.data || []).map(m => (m.id || '').toLowerCase())
+    );
+
+    logger.info(`[ModelResolver/${slotLabel}] ${liveIds.size} live Groq models found`);
+
+    for (const candidate of preferenceList) {
+      if (liveIds.has(candidate.toLowerCase())) {
+        logger.info(`[ModelResolver/${slotLabel}] Selected: ${candidate}`);
+        return candidate;
+      }
+    }
+
+    // None of our preferences are live — use first preference and let the API
+    // return a proper deprecation error rather than silently using a wrong model
+    logger.warn(
+      `[ModelResolver/${slotLabel}] No preference matched live models. ` +
+      `Falling back to: ${preferenceList[0]}. ` +
+      `Live models: ${[...liveIds].slice(0, 10).join(', ')}`
+    );
+    return preferenceList[0];
+
+  } catch (err) {
+    logger.warn(`[ModelResolver/${slotLabel}] Resolution failed (${err.message}) — using: ${preferenceList[0]}`);
+    return preferenceList[0];
+  }
+}
+
+// ─── GEMINI MODEL RESOLVER ────────────────────────────────────────────────────
+/**
+ * Fetch the live Gemini model list and select the best available model that
+ * supports generateContent.
+ *
+ * @param {string} geminiKey
+ * @returns {Promise<string>} - resolved model id (bare, e.g. "gemini-2.0-flash")
+ */
+async function resolveGeminiModel(geminiKey) {
+  try {
+    const response = await fetch(`${GEMINI_MODELS_URL}?key=${geminiKey}`, {
+      method:  'GET',
+      headers: { 'Content-Type': 'application/json' },
+      signal:  AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      logger.warn(`[ModelResolver/Google] Models endpoint returned ${response.status} — using first preference`);
+      return GEMINI_PREFERENCE[0];
+    }
+
+    const data = await response.json().catch(() => null);
+
+    // Each model object looks like:
+    //   { name: "models/gemini-2.0-flash", supportedGenerationMethods: ["generateContent", ...] }
+    const liveGenerateModels = new Set(
+      (data?.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map(m => (m.name || '').replace('models/', '').toLowerCase())
+    );
+
+    logger.info(`[ModelResolver/Google] ${liveGenerateModels.size} Gemini generateContent models found`);
+
+    for (const candidate of GEMINI_PREFERENCE) {
+      if (liveGenerateModels.has(candidate.toLowerCase())) {
+        logger.info(`[ModelResolver/Google] Selected: ${candidate}`);
+        return candidate;
+      }
+    }
+
+    logger.warn(
+      `[ModelResolver/Google] No preference matched. Falling back to: ${GEMINI_PREFERENCE[0]}. ` +
+      `Live: ${[...liveGenerateModels].slice(0, 8).join(', ')}`
+    );
+    return GEMINI_PREFERENCE[0];
+
+  } catch (err) {
+    logger.warn(`[ModelResolver/Google] Resolution failed (${err.message}) — using: ${GEMINI_PREFERENCE[0]}`);
+    return GEMINI_PREFERENCE[0];
+  }
+}
+
+// ─── LAZY RESOLVERS ───────────────────────────────────────────────────────────
+// Called once before the first real query. Subsequent calls return the cached value.
+
+async function getMetaModel() {
+  if (!_resolvedModels.meta) {
+    const key = process.env.GROQ_API_KEY;
+    _resolvedModels.meta = key
+      ? await resolveGroqModel(GROQ_META_PREFERENCE, key, 'Meta AI')
+      : GROQ_META_PREFERENCE[0];
+  }
+  return _resolvedModels.meta;
+}
+
+async function getMistralModel() {
+  if (!_resolvedModels.mistral) {
+    const key = process.env.GROQ_API_KEY;
+    _resolvedModels.mistral = key
+      ? await resolveGroqModel(GROQ_MISTRAL_PREFERENCE, key, 'Mistral')
+      : GROQ_MISTRAL_PREFERENCE[0];
+  }
+  return _resolvedModels.mistral;
+}
+
+async function getGeminiModel() {
+  if (!_resolvedModels.google) {
+    const key = process.env.GEMINI_API_KEY;
+    _resolvedModels.google = key
+      ? await resolveGeminiModel(key)
+      : GEMINI_PREFERENCE[0];
+  }
+  return _resolvedModels.google;
+}
+
 // ─── REQUEST PARAMETERS ───────────────────────────────────────────────────────
+
 const TIMEOUT_MS  = 35000;
 const MAX_TOKENS  = 1200;
 // Temperature 0.4 — slightly higher than pure factual mode so the model
@@ -84,20 +266,7 @@ Be honest about your confidence at the end: how certain are you about what you w
 // ─── STRUCTURED SIGNAL EXTRACTION PROMPT ──────────────────────────────────────
 /**
  * The second-turn prompt extracts structured signals from the free-form
- * primary response. It is deliberately designed to capture BOTH formal
- * and informal knowledge dimensions.
- *
- * New fields added vs the original:
- *   SENTIMENT           — overall emotional tone of what the AI knows
- *   COMMUNITY_PRESENT   — does the AI have community/social knowledge
- *   RECOMMENDED         — does the AI's knowledge include recommendation signals
- *   SOCIAL_FOOTPRINT    — is there social media / creator / influencer signal
- *   VIRALITY_SIGNAL     — any viral moments, memes, cultural events known
- *   INFORMAL_SCORE      — 1-10 rating of how rich the informal/social knowledge is
- *   FORMAL_SCORE        — 1-10 rating of how rich the formal/factual knowledge is
- *
- * This separation is critical — a brand can score 9 on INFORMAL_SCORE and
- * 2 on FORMAL_SCORE and that is a completely legitimate, high-value result.
+ * primary response. Captures both formal and informal knowledge dimensions.
  *
  * @param {string} primaryResponse
  * @returns {string}
@@ -128,7 +297,7 @@ Reply with only these 14 lines. No other text.`;
  * Generic fetch with timeout. Returns structured result — never throws.
  */
 async function safeFetch(url, options, engineName) {
-  const controller  = new AbortController();
+  const controller    = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
@@ -160,18 +329,23 @@ async function safeFetch(url, options, engineName) {
 
 // ─── GROQ ENGINE ─────────────────────────────────────────────────────────────
 /**
- * Query Groq API (used for Meta AI via Llama 3.1 and Mistral via Mixtral).
- * Two-turn conversation: primary probe then structured signal extraction.
+ * Query Groq API. Model is resolved at first call via the live models endpoint
+ * then cached — never hardcoded.
  */
-async function queryGroq(domain, model, engineLabel) {
+async function queryGroq(domain, modelResolver, engineLabel) {
   const groqKey = process.env.GROQ_API_KEY;
   if (!groqKey) {
     logger.error(`GROQ_API_KEY not set — cannot query ${engineLabel}`);
     return { primaryText: '', verificationText: '', error: 'GROQ_API_KEY not configured' };
   }
 
+  // Resolve model id (cached after first call)
+  const model = await modelResolver();
+
+  logger.info(`[${engineLabel}] Using model: ${model}`);
+
   const headers = {
-    'Content-Type': 'application/json',
+    'Content-Type':  'application/json',
     'Authorization': `Bearer ${groqKey}`
   };
 
@@ -180,7 +354,7 @@ async function queryGroq(domain, model, engineLabel) {
 
   const primaryPayload = {
     model,
-    messages: [{ role: 'user', content: buildAwarenessPrompt(domain) }],
+    messages:    [{ role: 'user', content: buildAwarenessPrompt(domain) }],
     max_tokens:  MAX_TOKENS,
     temperature: TEMPERATURE,
     top_p:       0.92,
@@ -194,6 +368,12 @@ async function queryGroq(domain, model, engineLabel) {
   );
 
   if (!primaryResult.ok) {
+    // If this model was just deprecated, invalidate cache so next call re-resolves
+    if (primaryResult.error && /decommission|deprecated|no longer supported/i.test(primaryResult.error)) {
+      logger.warn(`[${engineLabel}] Model ${model} appears decommissioned — clearing cache for re-resolution`);
+      if (engineLabel === 'Meta AI') _resolvedModels.meta    = null;
+      if (engineLabel === 'Mistral') _resolvedModels.mistral = null;
+    }
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
 
@@ -236,8 +416,9 @@ async function queryGroq(domain, model, engineLabel) {
 
 // ─── GEMINI ENGINE ────────────────────────────────────────────────────────────
 /**
- * Query Gemini 1.5 Flash (Google AI).
- * Uses Gemini's native multi-turn content array format.
+ * Query Gemini. Model is resolved at first call via the live models endpoint
+ * then cached — never hardcoded. The generateContent URL is built dynamically
+ * from the resolved model id.
  */
 async function queryGemini(domain) {
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -246,7 +427,15 @@ async function queryGemini(domain) {
     return { primaryText: '', verificationText: '', error: 'GEMINI_API_KEY not configured' };
   }
 
-  const url     = `${GEMINI_API_URL}?key=${geminiKey}`;
+  // Resolve model id (cached after first call)
+  const model = await getGeminiModel();
+
+  // Build the URL dynamically from the resolved model — no hardcoded path
+  const generateUrl = `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${geminiKey}`;
+
+  logger.info(`[Google AI] Using model: ${model}`);
+  logger.info(`[Google AI] Sending awareness probe — domain: ${domain}`);
+
   const headers = { 'Content-Type': 'application/json' };
 
   const generationConfig = {
@@ -254,8 +443,6 @@ async function queryGemini(domain) {
     topP:            0.92,
     maxOutputTokens: MAX_TOKENS
   };
-
-  logger.info(`[Google AI] Sending awareness probe — domain: ${domain}`);
 
   // ── Turn 1 ──
   const primaryPayload = {
@@ -267,12 +454,17 @@ async function queryGemini(domain) {
   };
 
   const primaryResult = await safeFetch(
-    url,
+    generateUrl,
     { method: 'POST', headers, body: JSON.stringify(primaryPayload) },
     'Google AI'
   );
 
   if (!primaryResult.ok) {
+    // If this model was just deprecated, invalidate cache so next call re-resolves
+    if (primaryResult.error && /not found|deprecated|not supported/i.test(primaryResult.error)) {
+      logger.warn(`[Google AI] Model ${model} appears unavailable — clearing cache for re-resolution`);
+      _resolvedModels.google = null;
+    }
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
 
@@ -284,7 +476,7 @@ async function queryGemini(domain) {
     const finishReason = primaryResult.data?.candidates?.[0]?.finishReason;
     logger.warn(`[Google AI] Empty response. Finish reason: ${finishReason}`);
     return {
-      primaryText: '',
+      primaryText:      '',
       verificationText: '',
       error: `Empty response from Gemini (${finishReason || 'unknown reason'})`
     };
@@ -303,7 +495,7 @@ async function queryGemini(domain) {
   };
 
   const verificationResult = await safeFetch(
-    url,
+    generateUrl,
     { method: 'POST', headers, body: JSON.stringify(verificationPayload) },
     'Google AI'
   );
@@ -331,7 +523,7 @@ async function queryOpenAI(domain, userOpenAIKey) {
   logger.info(`[ChatGPT] Sending awareness probe — domain: ${domain}`);
 
   const primaryPayload = {
-    model:       MODELS.chatgpt,
+    model:       STATIC_MODELS.chatgpt,
     messages:    [{ role: 'user', content: buildAwarenessPrompt(domain) }],
     max_tokens:  MAX_TOKENS,
     temperature: TEMPERATURE
@@ -361,7 +553,7 @@ async function queryOpenAI(domain, userOpenAIKey) {
   logger.info(`[ChatGPT] Primary response: ${primaryText.length} chars`);
 
   const verificationPayload = {
-    model:       MODELS.chatgpt,
+    model:       STATIC_MODELS.chatgpt,
     messages:    [
       { role: 'user',      content: buildAwarenessPrompt(domain) },
       { role: 'assistant', content: primaryText },
@@ -399,7 +591,7 @@ async function queryAnthropic(domain, userAnthropicKey) {
   logger.info(`[Claude] Sending awareness probe — domain: ${domain}`);
 
   const primaryPayload = {
-    model:       MODELS.claude,
+    model:       STATIC_MODELS.claude,
     max_tokens:  MAX_TOKENS,
     temperature: TEMPERATURE,
     messages:    [{ role: 'user', content: buildAwarenessPrompt(domain) }]
@@ -429,10 +621,10 @@ async function queryAnthropic(domain, userAnthropicKey) {
   logger.info(`[Claude] Primary response: ${primaryText.length} chars`);
 
   const verificationPayload = {
-    model:      MODELS.claude,
-    max_tokens: 400,
+    model:       STATIC_MODELS.claude,
+    max_tokens:  400,
     temperature: 0.05,
-    messages:   [
+    messages:    [
       { role: 'user',      content: buildAwarenessPrompt(domain) },
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
@@ -455,13 +647,6 @@ async function queryAnthropic(domain, userAnthropicKey) {
 // ─── VERIFICATION BLOCK PARSER ────────────────────────────────────────────────
 /**
  * Parse the 14-line structured verification block.
- *
- * Captures both traditional claim counts AND the new informal/social
- * signal dimensions: sentiment, community presence, recommendation signals,
- * social footprint, virality, informal vs formal knowledge scores.
- *
- * All parsing uses generous regex with robust fallbacks — a missing or
- * malformed line never crashes the parser.
  *
  * @param {string} text
  * @returns {{
@@ -501,7 +686,6 @@ function parseVerificationBlock(text) {
 
   if (!text || text.trim().length === 0) return defaults;
 
-  // ── Integer extractor ──
   function extractInt(pattern, min = 0, max = 50) {
     const m = text.match(pattern);
     if (!m) return 0;
@@ -509,7 +693,6 @@ function parseVerificationBlock(text) {
     return isNaN(n) ? 0 : Math.min(Math.max(n, min), max);
   }
 
-  // ── Scale extractor (1–10) ──
   function extractScale(pattern) {
     const m = text.match(pattern);
     if (!m) return 5;
@@ -517,7 +700,6 @@ function parseVerificationBlock(text) {
     return isNaN(n) ? 5 : Math.min(Math.max(n, 1), 10);
   }
 
-  // ── Keyword extractor ──
   function extractKeyword(pattern, validValues, defaultVal) {
     const m = text.match(pattern);
     if (!m || !m[1]) return defaultVal;
@@ -525,7 +707,6 @@ function parseVerificationBlock(text) {
     return validValues.includes(val) ? val : defaultVal;
   }
 
-  // ── List extractor ──
   function extractList(pattern) {
     const m = text.match(pattern);
     if (!m || !m[1]) return [];
@@ -536,7 +717,6 @@ function parseVerificationBlock(text) {
       .slice(0, 8);
   }
 
-  // ── Boolean extractor ──
   function extractBool(pattern) {
     const m = text.match(pattern);
     if (!m || !m[1]) return false;
@@ -569,27 +749,17 @@ function parseVerificationBlock(text) {
 /**
  * Extract the display narrative from the model's primary response.
  *
- * DESIGN: Because the primary prompt is now open-ended and conversational,
- * the model's response will be flowing prose — not a numbered list.
- * The extractor preserves this natural tone rather than stripping structure.
- *
- * It trims to a display-appropriate length (700 chars), preserves paragraph
- * breaks, and extracts the self-reported confidence score from wherever
- * the model mentioned it (no longer locked to "section 5").
- *
  * @param {string} primaryText
  * @returns {{ narrative: string, rawConfidenceScore: number }}
  */
 function extractNarrative(primaryText) {
   if (!primaryText || primaryText.trim().length === 0) {
     return {
-      narrative: 'No response received from this engine.',
+      narrative:          'No response received from this engine.',
       rawConfidenceScore: 0
     };
   }
 
-  // ── Extract self-reported confidence ──
-  // The model can mention this anywhere in free-form prose
   let rawConfidenceScore = 5;
   const confPatterns = [
     /confidence[:\s]+(\b([1-9]|10)\b)/i,
@@ -600,7 +770,6 @@ function extractNarrative(primaryText) {
   for (const pattern of confPatterns) {
     const m = primaryText.match(pattern);
     if (m) {
-      // The captured group might be in position 1 or 2 depending on pattern
       const raw = parseInt(m[2] || m[1], 10);
       if (!isNaN(raw) && raw >= 1 && raw <= 10) {
         rawConfidenceScore = raw;
@@ -609,16 +778,12 @@ function extractNarrative(primaryText) {
     }
   }
 
-  // ── Clean the text ──
   const cleaned = primaryText
-    // Remove any numbered structural labels the model still added despite free-form prompt
     .replace(/^\s*\d+[\.\)]\s*(recognition|description|reputation|details|confidence|gaps)[:\s]*/gim, '\n')
-    // Normalise excessive whitespace but preserve intentional paragraph breaks
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  // ── Detect zero-knowledge responses ──
   const noKnowledgePatterns = [
     /(?:i don.t|i do not)\s+(?:have|know)/i,
     /no\s+(?:information|data|knowledge|records)/i,
@@ -636,12 +801,10 @@ function extractNarrative(primaryText) {
     };
   }
 
-  // ── Truncate to display length preserving sentence boundaries ──
   const MAX_DISPLAY_CHARS = 700;
   let narrative = cleaned;
 
   if (cleaned.length > MAX_DISPLAY_CHARS) {
-    // Try to cut at a sentence boundary near the limit
     const cutPoint = cleaned.lastIndexOf('. ', MAX_DISPLAY_CHARS);
     if (cutPoint > MAX_DISPLAY_CHARS * 0.6) {
       narrative = cleaned.slice(0, cutPoint + 1);
@@ -662,25 +825,7 @@ function extractNarrative(primaryText) {
  * @param {string}   domain   - normalised domain e.g. "stripe.com"
  * @param {string[]} engines  - e.g. ['meta', 'google', 'mistral']
  * @param {{ openai?: string, anthropic?: string }} keys
- * @returns {Promise<Object.<string, {
- *   primaryText:        string,
- *   verificationText:   string,
- *   narrative:          string,
- *   rawConfidenceScore: number,
- *   accurateClaims:     number,
- *   conflictingClaims:  number,
- *   unverifiableClaims: number,
- *   topicsKnown:        string[],
- *   topicsUnknown:      string[],
- *   sentiment:          string,
- *   communityPresent:   boolean,
- *   recommended:        string,
- *   socialFootprint:    string,
- *   viralitySignal:     boolean,
- *   informalScore:      number,
- *   formalScore:        number,
- *   error:              string|null
- * }>>}
+ * @returns {Promise<Object>}
  */
 async function queryAllEngines(domain, engines, keys = {}) {
   logger.info(
@@ -692,10 +837,11 @@ async function queryAllEngines(domain, engines, keys = {}) {
 
     switch (engine) {
       case 'meta':
-        promise = queryGroq(domain, MODELS.meta, 'Meta AI');
+        // Pass the lazy resolver — model is resolved once then cached
+        promise = queryGroq(domain, getMetaModel, 'Meta AI');
         break;
       case 'mistral':
-        promise = queryGroq(domain, MODELS.mistral, 'Mistral');
+        promise = queryGroq(domain, getMistralModel, 'Mistral');
         break;
       case 'google':
         promise = queryGemini(domain);
@@ -744,13 +890,11 @@ async function queryAllEngines(domain, engines, keys = {}) {
       verificationText,
       narrative,
       rawConfidenceScore,
-      // Standard claim counts
       accurateClaims:     verification.accurateClaims,
       conflictingClaims:  verification.conflictingClaims,
       unverifiableClaims: verification.unverifiableClaims,
       topicsKnown:        verification.topicsKnown,
       topicsUnknown:      verification.topicsUnknown,
-      // NEW: informal/social signal dimensions
       sentiment:          verification.sentiment,
       communityPresent:   verification.communityPresent,
       recommended:        verification.recommended,
@@ -758,9 +902,8 @@ async function queryAllEngines(domain, engines, keys = {}) {
       viralitySignal:     verification.viralitySignal,
       informalScore:      verification.informalScore,
       formalScore:        verification.formalScore,
-      // Raw confidence for scorer
       rawConfidenceScore: verification.confidence || rawConfidenceScore,
-      error: error || null
+      error:              error || null
     };
 
     if (error) {
