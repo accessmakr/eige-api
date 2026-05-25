@@ -3,68 +3,189 @@
 const logger = require('../../utils/logger');
 
 // ─── SCORING WEIGHTS ──────────────────────────────────────────────────────────
-// The four dimensions and how much each contributes to the overall score.
-// Recognition is weighted highest because a brand that is not recognised
-// cannot be accurately described regardless of other dimensions.
+// Recognition is the foundation — if the AI does not know the brand exists,
+// nothing else matters. Accuracy and depth share almost equal weight.
+// Confidence is a supporting signal, not a primary driver.
 const DIMENSION_WEIGHTS = {
-  recognition: 0.28,
+  recognition: 0.30,
   depth:       0.25,
-  accuracy:    0.27,
+  accuracy:    0.25,
   confidence:  0.20
 };
 
-// ─── LINGUISTIC SIGNAL LIBRARIES ─────────────────────────────────────────────
-
-/**
- * Phrases that strongly indicate the model DOES recognise the brand.
- * Presence of any of these in the response boosts recognition score.
- */
-const RECOGNITION_POSITIVE_SIGNALS = [
-  'is a company',
+// ─── INFORMAL RECOGNITION SIGNALS ────────────────────────────────────────────
+// These are phrases that indicate the AI knows the brand in a practical,
+// experiential sense — even if it cannot cite founding year or CEO name.
+// This is the most important signal set in the entire scorer.
+const INFORMAL_RECOGNITION_SIGNALS = [
+  // Categorical awareness
+  'is a',
+  'is an',
+  'is the',
+  'is a popular',
+  'is a well-known',
+  'is a widely used',
+  'is a leading',
+  'is a major',
+  'is a common',
+  'is a well-regarded',
+  'is a trusted',
+  'is a free',
+  'is a paid',
+  'is a subscription',
+  'is a tool',
   'is a platform',
   'is a service',
   'is a product',
-  'is a brand',
+  'is a company',
   'is a startup',
+  'is a brand',
   'is a website',
-  'is a tool',
-  'is a software',
-  'is an organisation',
-  'is an organization',
+  'is a web',
   'is an app',
-  'is a fintech',
+  'is an application',
+  'is an online',
+  'is a software',
   'is a saas',
   'is a marketplace',
   'is a network',
-  'is a solution',
-  'known for',
-  'well-known',
-  'widely used',
-  'popular',
-  'founded in',
-  'headquartered in',
-  'based in',
-  'specialises in',
-  'specializes in',
+  'is a community',
+  // Functional awareness — the AI knows what it does
+  'used for',
+  'used by',
+  'helps users',
+  'helps people',
+  'helps businesses',
+  'allows users',
+  'allows people',
+  'allows businesses',
+  'enables users',
+  'enables businesses',
   'provides',
   'offers',
-  'enables',
-  'operates in',
-  'serves',
+  'specialises in',
+  'specializes in',
   'focuses on',
-  'was launched',
-  'was founded',
-  'was established',
-  'is used by',
-  'trusted by',
+  'designed for',
+  'built for',
+  'created for',
+  'intended for',
+  'aimed at',
+  'targeted at',
+  'designed to',
+  'built to',
+  'known for',
+  'popular for',
+  'popular among',
+  'commonly used',
+  'frequently used',
+  'widely adopted',
+  'widely used',
+  'widely popular',
+  'primarily used',
+  'mainly used',
+  'mostly used',
+  // Audience awareness — the AI knows who uses it
+  'developers',
+  'designers',
+  'marketers',
+  'businesses',
+  'companies',
+  'individuals',
+  'professionals',
+  'students',
+  'creators',
+  'teams',
+  'enterprises',
+  'small businesses',
+  'freelancers',
+  'startups',
+  'consumers',
+  'users',
+  // Reputation and perception signals
+  'well-received',
+  'well received',
+  'highly rated',
+  'highly regarded',
+  'well regarded',
+  'respected',
+  'reputable',
+  'reliable',
+  'trusted',
+  'recommended',
+  'praised',
   'recognised for',
-  'recognized for'
+  'recognized for',
+  'noted for',
+  'celebrated for',
+  'considered',
+  'regarded as',
+  'seen as',
+  'known as',
+  // Industry/category placement
+  'operates in',
+  'operates within',
+  'industry',
+  'sector',
+  'market',
+  'space',
+  'niche',
+  'category',
+  'vertical',
+  'segment',
+  'field',
+  'domain',
+  // Competitive awareness
+  'competes with',
+  'competitor',
+  'alternative to',
+  'similar to',
+  'compared to',
+  'alongside',
+  'like',
+  'such as'
 ];
 
-/**
- * Phrases that strongly indicate the model does NOT recognise the brand,
- * or has very low confidence in its knowledge.
- */
+// ─── FORMAL RECOGNITION SIGNALS ───────────────────────────────────────────────
+// These are signals that the AI has deeper, encyclopaedic knowledge.
+// Important but NOT required for high scores — these are bonus signals only.
+const FORMAL_RECOGNITION_SIGNALS = [
+  'founded in',
+  'founded by',
+  'established in',
+  'launched in',
+  'headquartered in',
+  'based in',
+  'located in',
+  'incorporated in',
+  'ceo',
+  'cto',
+  'cfo',
+  'founder',
+  'co-founder',
+  'president',
+  'executive',
+  '\$',
+  'revenue',
+  'valuation',
+  'funding',
+  'series',
+  'investors',
+  'venture',
+  'ipo',
+  'publicly traded',
+  'employees',
+  'staff',
+  'team of',
+  'acquired',
+  'acquisition',
+  'merger',
+  'partnership',
+  'nasdaq',
+  'nyse'
+];
+
+// ─── NEGATIVE RECOGNITION SIGNALS ────────────────────────────────────────────
 const RECOGNITION_NEGATIVE_SIGNALS = [
   "i don't have",
   "i do not have",
@@ -97,12 +218,15 @@ const RECOGNITION_NEGATIVE_SIGNALS = [
   'could not locate',
   'appears to be unknown',
   'does not appear',
-  'likely not well-known'
+  'likely not well-known',
+  'no specific information',
+  'not a well-known',
+  'not widely known',
+  'obscure',
+  'little known'
 ];
 
-/**
- * Phrases that indicate partial or uncertain recognition.
- */
+// ─── PARTIAL / HEDGING SIGNALS ────────────────────────────────────────────────
 const RECOGNITION_PARTIAL_SIGNALS = [
   'i believe',
   'i think',
@@ -127,49 +251,66 @@ const RECOGNITION_PARTIAL_SIGNALS = [
   'some knowledge'
 ];
 
-/**
- * Specific factual detail types whose presence indicates deep knowledge.
- * Each pattern matched adds depth bonus points.
- */
-const DEPTH_DETAIL_PATTERNS = [
-  { pattern: /founded\s+in\s+\d{4}/i,                  label: 'founding year',       bonus: 8 },
-  { pattern: /\b(19|20)\d{2}\b/,                        label: 'year reference',      bonus: 4 },
-  { pattern: /headquartered\s+in|based\s+in|located\s+in/i, label: 'location',        bonus: 6 },
-  { pattern: /\$[\d.,]+\s*(million|billion|M|B)\b/i,    label: 'financial figure',    bonus: 10 },
-  { pattern: /\b[\d.,]+\s*(million|billion)\s+users?\b/i, label: 'user count',        bonus: 9 },
-  { pattern: /CEO|CTO|CFO|founder|co-founder/i,         label: 'executive reference', bonus: 7 },
-  { pattern: /series\s+[A-Z]|ipo|vc\s+funding|venture/i, label: 'funding reference', bonus: 8 },
-  { pattern: /revenue|profit|valuation|market\s+cap/i,  label: 'financial metrics',   bonus: 9 },
-  { pattern: /acquired\s+by|acquisition|merger/i,       label: 'M&A reference',       bonus: 7 },
-  { pattern: /publicly\s+traded|nasdaq|nyse|stock/i,    label: 'public company ref',  bonus: 8 },
-  { pattern: /api|sdk|platform|infrastructure/i,        label: 'technical detail',    bonus: 4 },
-  { pattern: /\d+\s+employees?|staff\s+of\s+\d+/i,     label: 'employee count',      bonus: 7 },
-  { pattern: /award|recognised|recognized|ranking/i,    label: 'recognition signal',  bonus: 4 },
-  { pattern: /partnership|partner\s+with|integration/i, label: 'partnership detail',  bonus: 5 },
-  { pattern: /launched|released|announced|introduced/i, label: 'milestone reference', bonus: 3 }
+// ─── INFORMAL DEPTH SIGNALS ───────────────────────────────────────────────────
+// These reflect broad knowledge breadth — use cases, workflows, integrations,
+// comparisons, community, pricing model. None of these are intrinsic facts.
+const INFORMAL_DEPTH_PATTERNS = [
+  { pattern: /use\s*case|use\s*cases/i,                    label: 'use cases mentioned',        bonus: 6 },
+  { pattern: /workflow|process|pipeline/i,                 label: 'workflow context',           bonus: 5 },
+  { pattern: /integrat(e|es|ion|ions)\s+with/i,            label: 'integrations mentioned',     bonus: 6 },
+  { pattern: /free\s+plan|free\s+tier|freemium|pricing/i,  label: 'pricing model known',        bonus: 5 },
+  { pattern: /community|forum|subreddit|discord/i,         label: 'community awareness',        bonus: 4 },
+  { pattern: /alternative|competitor|versus|vs\./i,        label: 'competitive awareness',      bonus: 6 },
+  { pattern: /mobile\s+app|ios|android|desktop|web\s+app/i, label: 'platform awareness',       bonus: 5 },
+  { pattern: /api|sdk|developer|open\s*source/i,           label: 'technical category known',   bonus: 4 },
+  { pattern: /popular\s+among|used\s+by\s+millions|widely/i, label: 'scale awareness',          bonus: 7 },
+  { pattern: /review|rating|testimonial|feedback/i,        label: 'reputation awareness',       bonus: 4 },
+  { pattern: /industry|sector|market|space|niche/i,        label: 'industry placement',         bonus: 5 },
+  { pattern: /problem|solution|challenge|pain\s*point/i,   label: 'problem-solution framing',   bonus: 5 },
+  { pattern: /trend|growing|growth|emerging|rising/i,      label: 'growth trajectory known',    bonus: 4 },
+  { pattern: /recommend|suggest|worth trying|worth using/i, label: 'recommendation signal',     bonus: 8 },
+  { pattern: /customer|client|user\s+base|audience/i,      label: 'audience awareness',         bonus: 4 }
 ];
 
-/**
- * Linguistic confidence markers — phrases that indicate the model is
- * stating facts with high certainty vs hedging.
- */
+// ─── FORMAL DEPTH PATTERNS ────────────────────────────────────────────────────
+// Intrinsic factual details — contribute bonus points to depth but are
+// NOT required for a high score. These are cherry-on-top signals.
+const FORMAL_DEPTH_PATTERNS = [
+  { pattern: /founded\s+in\s+\d{4}/i,                      label: 'founding year',              bonus: 7 },
+  { pattern: /\b(19|20)\d{2}\b/,                            label: 'year reference',             bonus: 3 },
+  { pattern: /headquartered\s+in|based\s+in|located\s+in/i, label: 'location',                  bonus: 5 },
+  { pattern: /\$[\d.,]+\s*(million|billion|M|B)\b/i,        label: 'financial figure',           bonus: 8 },
+  { pattern: /\b[\d.,]+\s*(million|billion)\s+users?\b/i,   label: 'user count',                 bonus: 8 },
+  { pattern: /CEO|CTO|CFO|founder|co-founder/i,             label: 'executive reference',        bonus: 6 },
+  { pattern: /series\s+[A-Z]|ipo|vc\s+funding|venture/i,   label: 'funding reference',          bonus: 7 },
+  { pattern: /revenue|profit|valuation|market\s+cap/i,      label: 'financial metrics',          bonus: 8 },
+  { pattern: /acquired\s+by|acquisition|merger/i,           label: 'M&A reference',              bonus: 6 },
+  { pattern: /publicly\s+traded|nasdaq|nyse|stock/i,        label: 'public company reference',   bonus: 7 },
+  { pattern: /\d+\s+employees?|staff\s+of\s+\d+/i,         label: 'employee count',             bonus: 6 },
+  { pattern: /award|accolade|ranking|recognised as/i,       label: 'award reference',            bonus: 4 },
+  { pattern: /partnership|partner\s+with/i,                 label: 'partnership detail',         bonus: 4 }
+];
+
+// ─── CONFIDENCE LANGUAGE SIGNALS ─────────────────────────────────────────────
 const HIGH_CONFIDENCE_LANGUAGE = [
   'is known',
   'is a leading',
-  'is the largest',
   'is one of the',
   'is widely',
   'is recognised',
   'is recognized',
   'has been',
   'operates as',
-  'serves over',
-  'processes over',
-  'reported that',
+  'serves',
+  'reported',
   'according to',
   'specifically',
   'notably',
-  'in particular'
+  'in particular',
+  'is used by',
+  'is popular',
+  'is trusted',
+  'is recommended'
 ];
 
 const LOW_CONFIDENCE_LANGUAGE = [
@@ -178,39 +319,25 @@ const LOW_CONFIDENCE_LANGUAGE = [
   'i assume',
   'if i recall',
   'not entirely',
-  'not completely',
   'might be',
   'could be',
   'possibly',
   'perhaps',
   'uncertain',
   'unsure',
-  'vague',
   'unclear',
   'limited information',
   'may have changed',
   'not fully',
-  'approximate',
-  'rough estimate'
+  'approximate'
 ];
 
-// ─── HELPER FUNCTIONS ─────────────────────────────────────────────────────────
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-/**
- * Clamp a number between min and max, then round to nearest integer.
- */
 function clamp(value, min = 0, max = 100) {
   return Math.round(Math.min(Math.max(value, min), max));
 }
 
-/**
- * Count how many items from a signals array appear in the text.
- * Case-insensitive substring matching.
- *
- * @param {string} text
- * @param {string[]} signals
- * @returns {number}
- */
 function countSignals(text, signals) {
   if (!text) return 0;
   const lower = text.toLowerCase();
@@ -219,28 +346,6 @@ function countSignals(text, signals) {
   }, 0);
 }
 
-/**
- * Count regex pattern matches against the text.
- * Returns total match count across all patterns.
- *
- * @param {string} text
- * @param {Array<{pattern: RegExp}>} patternList
- * @returns {number}
- */
-function countPatternMatches(text, patternList) {
-  if (!text) return 0;
-  return patternList.reduce((count, item) => {
-    return item.pattern.test(text) ? count + 1 : count;
-  }, 0);
-}
-
-/**
- * Count the number of meaningful words in a string.
- * Filters out common stop words to get a more accurate signal of informational density.
- *
- * @param {string} text
- * @returns {number}
- */
 function countMeaningfulWords(text) {
   if (!text) return 0;
   const STOP_WORDS = new Set([
@@ -261,343 +366,303 @@ function countMeaningfulWords(text) {
     .length;
 }
 
-// ─── DIMENSION SCORERS ────────────────────────────────────────────────────────
+// ─── RECOGNITION SCORER ───────────────────────────────────────────────────────
 
 /**
- * Score the RECOGNITION dimension (0–100).
+ * Score RECOGNITION (0–100).
  *
- * Recognition measures how clearly and definitively the AI engine
- * acknowledges that it knows the brand. A high score means the model
- * states unambiguously that it recognises the brand and can describe it.
- * A low score means the model explicitly stated it does not know the brand.
+ * Recognition measures whether the AI knows the brand exists and has
+ * any meaningful model of it. Both informal and formal knowledge count.
  *
- * Scoring breakdown:
- *   Base: 50 points (neutral start)
- *   Positive signals detected: +3 per signal, up to +35
- *   Partial/hedging signals:   -4 per signal, up to -20
- *   Negative signals:          -15 per signal, up to -50 (floor at 5)
- *   Section 1 explicit "YES":  +15 bonus
- *   Section 1 explicit "NO":   hard cap at 10
+ * A brand is well-recognised if the AI:
+ *   — knows what category it belongs to (informal)
+ *   — knows what it does at a functional level (informal)
+ *   — knows who uses it (informal)
+ *   — can state facts about it (formal — bonus only)
  *
- * @param {string} primaryText
- * @returns {number} 0–100
+ * A brand is NOT recognised if the AI explicitly states ignorance.
+ *
+ * Scoring:
+ *   Base:                           40 points
+ *   Informal recognition signals:   up to +45 points  (primary)
+ *   Formal recognition signals:     up to +15 points  (bonus)
+ *   Partial/hedging penalty:        up to -15 points
+ *   Negative signals:               up to -50 points (or hard cap)
+ *   Explicit YES in section 1:      +10 bonus
+ *   Explicit PARTIALLY:             capped at 65
+ *   Explicit NO:                    hard cap at 12
  */
 function scoreRecognition(primaryText) {
   if (!primaryText || primaryText.trim().length < 10) return 0;
 
   const text = primaryText.toLowerCase();
 
-  // Check for explicit NO in section 1
-  const section1Match = primaryText.match(/1[\.\)]\s*RECOGNITION[:\s]+(.*?)(?=2[\.\)]|\n\n|$)/is);
-  const section1Text = section1Match ? section1Match[1].toLowerCase() : text.slice(0, 300);
+  // Extract section 1 (RECOGNITION) if present
+  const section1Match = primaryText.match(
+    /1[\.\)]\s*RECOGNITION[:\s]+(.*?)(?=2[\.\)]|\n\n|$)/is
+  );
+  const section1Text = (section1Match ? section1Match[1] : primaryText.slice(0, 400)).toLowerCase();
 
-  // Hard negative: explicit statement of no knowledge
+  // Hard cap: explicit no-knowledge statement
   const negativeCount = countSignals(text, RECOGNITION_NEGATIVE_SIGNALS);
-  if (negativeCount >= 3) return clamp(5 + (10 - negativeCount * 2), 0, 15);
-  if (negativeCount >= 2) return clamp(15, 0, 20);
+  if (negativeCount >= 3) return clamp(3 + negativeCount, 0, 12);
+  if (negativeCount >= 2) return clamp(14, 0, 18);
 
-  let score = 50;
+  let score = 40;
 
-  // Positive signals
-  const positiveCount = countSignals(text, RECOGNITION_POSITIVE_SIGNALS);
-  score += Math.min(positiveCount * 3, 35);
+  // Informal recognition is the primary positive driver
+  const informalCount = countSignals(text, INFORMAL_RECOGNITION_SIGNALS);
+  score += Math.min(informalCount * 1.5, 45);
 
-  // Partial/hedging signals reduce score
+  // Formal recognition is a bonus on top — not required
+  const formalCount = countSignals(text, FORMAL_RECOGNITION_SIGNALS);
+  score += Math.min(formalCount * 2, 15);
+
+  // Hedging language reduces score — the AI is uncertain
   const partialCount = countSignals(text, RECOGNITION_PARTIAL_SIGNALS);
-  score -= Math.min(partialCount * 4, 20);
+  score -= Math.min(partialCount * 3, 15);
 
-  // Negative signals reduce score
-  score -= Math.min(negativeCount * 15, 50);
+  // Each negative signal reduces score
+  score -= negativeCount * 12;
 
-  // Explicit YES in recognition section is a strong positive signal
-  if (/\byes\b/i.test(section1Text) && !/\bno\b/i.test(section1Text.slice(0, 10))) {
-    score += 15;
+  // Section 1 explicit YES bonus
+  if (/\byes\b/i.test(section1Text) && !/\bno\b/i.test(section1Text.slice(0, 15))) {
+    score += 10;
   }
 
-  // Explicit PARTIALLY in recognition section
+  // Section 1 explicit PARTIALLY — cap
   if (/\bpartially\b/i.test(section1Text)) {
     score = Math.min(score, 65);
   }
 
-  // Explicit NO in recognition section — hard cap
-  if (/\bno\b/i.test(section1Text.slice(0, 30)) || /does not recognise|does not recognize|not recognise/i.test(section1Text)) {
+  // Section 1 explicit NO — hard cap
+  if (
+    /^\s*no[\s.,]/i.test(section1Text) ||
+    /does not recognise|does not recognize|not recognise/i.test(section1Text)
+  ) {
     return clamp(Math.min(score, 12), 0, 15);
   }
 
-  // Minimum floor: if any positive signals were found, score cannot be below 20
-  if (positiveCount > 0 && score < 20) score = 20;
+  // Floor: if any informal signals found, score cannot be below 25
+  if (informalCount > 2 && score < 25) score = 25;
 
   return clamp(score);
 }
 
+// ─── DEPTH SCORER ────────────────────────────────────────────────────────────
+
 /**
- * Score the DEPTH dimension (0–100).
+ * Score DEPTH (0–100).
  *
- * Depth measures how much detailed, specific information the AI engine
- * provides about the brand. A high depth score means the engine knows
- * founding details, financial metrics, key people, products, and milestones.
- * A low depth score means the response is vague, brief, or generic.
+ * Depth measures how much the AI knows about the brand — breadth of
+ * knowledge across both informal dimensions (use cases, audience, workflows,
+ * competitive landscape, community) AND formal dimensions (founding facts,
+ * financial data, executives).
  *
- * Scoring breakdown:
- *   Word count contribution:     0–30 points (scaled from meaningful word count)
- *   Topics known:                up to 20 points (3 per topic, max 8 topics)
- *   Factual detail patterns:     sum of bonus points from DEPTH_DETAIL_PATTERNS
- *   Claim count contribution:    up to 15 points
- *   Response length bonus:       up to 5 points
+ * CRITICAL DESIGN PRINCIPLE: informal depth and formal depth are treated
+ * as two independent contributors. A brand can score very high on depth
+ * through informal knowledge alone. Formal knowledge adds bonus points
+ * on top — it does NOT penalise its absence.
  *
- * @param {string} primaryText
- * @param {number} accurateClaims
- * @param {number} conflictingClaims
- * @param {number} unverifiableClaims
- * @param {string[]} topicsKnown
- * @returns {number} 0–100
+ * Scoring:
+ *   Informal depth patterns:   up to 45 points  (primary)
+ *   Word count (meaningful):   up to 20 points
+ *   Topics known breadth:      up to 15 points
+ *   Formal depth patterns:     up to 20 points  (bonus only)
+ *   Section completeness:      up to 5 points
+ *   Total claims bonus:        up to 5 points
  */
 function scoreDepth(primaryText, accurateClaims, conflictingClaims, unverifiableClaims, topicsKnown) {
   if (!primaryText || primaryText.trim().length < 10) return 0;
 
   let score = 0;
 
-  // ── Word count contribution ──
-  const wordCount = countMeaningfulWords(primaryText);
-  // Scale: 0 words = 0, 50 words = 10, 150 words = 25, 300+ words = 30
-  const wordScore = Math.min((wordCount / 300) * 30, 30);
-  score += wordScore;
-
-  // ── Topics known contribution ──
-  const topicCount = Array.isArray(topicsKnown) ? topicsKnown.length : 0;
-  score += Math.min(topicCount * 3, 20);
-
-  // ── Factual detail pattern matching ──
-  let detailBonus = 0;
-  for (const item of DEPTH_DETAIL_PATTERNS) {
+  // ── Informal depth: use cases, audience, comparisons, recommendations ──
+  // This is the PRIMARY depth driver — not intrinsic facts
+  let informalBonus = 0;
+  for (const item of INFORMAL_DEPTH_PATTERNS) {
     if (item.pattern.test(primaryText)) {
-      detailBonus += item.bonus;
+      informalBonus += item.bonus;
     }
   }
-  score += Math.min(detailBonus, 35);
+  score += Math.min(informalBonus, 45);
 
-  // ── Total claim count contribution ──
-  const totalClaims = (accurateClaims || 0) + (conflictingClaims || 0) + (unverifiableClaims || 0);
-  // Scale: 0 claims = 0, 5 claims = 5, 10 claims = 10, 15+ claims = 15
-  score += Math.min((totalClaims / 15) * 15, 15);
+  // ── Word count: more meaningful content = more depth ──
+  const wordCount = countMeaningfulWords(primaryText);
+  // 0 words=0, 80 words=10, 200 words=18, 350+ words=20
+  const wordScore = Math.min((wordCount / 350) * 20, 20);
+  score += wordScore;
 
-  // ── Response sections completeness ──
-  // Check all 6 sections were answered
-  const sectionCount = (primaryText.match(/[1-6][\.\)]\s*(RECOGNITION|DESCRIPTION|REPUTATION|DETAILS|CONFIDENCE|GAPS)/gi) || []).length;
+  // ── Topics known breadth ──
+  // Each topic the model explicitly claims to know about is +3 points
+  const topicCount = Array.isArray(topicsKnown) ? topicsKnown.length : 0;
+  score += Math.min(topicCount * 3, 15);
+
+  // ── Formal depth: intrinsic facts are a bonus — never penalised for absence ──
+  let formalBonus = 0;
+  for (const item of FORMAL_DEPTH_PATTERNS) {
+    if (item.pattern.test(primaryText)) {
+      formalBonus += item.bonus;
+    }
+  }
+  score += Math.min(formalBonus, 20);
+
+  // ── Section completeness ──
+  const sectionCount = (primaryText.match(
+    /[1-6][\.\)]\s*(RECOGNITION|DESCRIPTION|REPUTATION|DETAILS|CONFIDENCE|GAPS)/gi
+  ) || []).length;
   if (sectionCount >= 5) score += 5;
   else if (sectionCount >= 3) score += 2;
+
+  // ── Total claims bonus ──
+  const totalClaims = (accurateClaims || 0) + (conflictingClaims || 0) + (unverifiableClaims || 0);
+  score += Math.min((totalClaims / 12) * 5, 5);
 
   return clamp(score);
 }
 
+// ─── ACCURACY SCORER ──────────────────────────────────────────────────────────
+
 /**
- * Score the ACCURACY dimension (0–100).
+ * Score ACCURACY (0–100).
  *
- * Accuracy measures how factually reliable the AI engine's response appears
- * to be. Since we cannot independently verify every claim against ground truth,
- * accuracy is inferred from three sources:
- *   1. The ratio of accurate to conflicting/unverifiable claims (from verification turn)
+ * Accuracy reflects how factually reliable the response appears to be.
+ * Since we cannot verify claims against ground truth, this is inferred from:
+ *   1. The ratio of accurate to conflicting claims (from verification turn)
  *   2. The linguistic confidence of the language used
- *   3. The model's own self-assessment from section 5
+ *   3. The model's own self-reported confidence (section 5)
  *
- * Scoring breakdown:
- *   Claim ratio:            0–50 points
- *   Linguistic confidence:  0–25 points
- *   Self-reported score:    0–25 points
- *
- * @param {string} primaryText
- * @param {number} accurateClaims
- * @param {number} conflictingClaims
- * @param {number} unverifiableClaims
- * @param {number} rawConfidenceScore - model's self-reported 1–10 score
- * @returns {number} 0–100
+ * A brand that the AI describes informally but correctly (right category,
+ * right audience, right use case) scores high on accuracy even with zero
+ * formal facts. Conversely, a response full of hedging and conflicting claims
+ * scores low on accuracy regardless of how much it says.
  */
 function scoreAccuracy(primaryText, accurateClaims, conflictingClaims, unverifiableClaims, rawConfidenceScore) {
   if (!primaryText || primaryText.trim().length < 10) return 0;
 
   let score = 0;
 
-  // ── Claim ratio component ──
+  // ── Claim ratio component (0–50 points) ──
   const totalClaims = (accurateClaims || 0) + (conflictingClaims || 0) + (unverifiableClaims || 0);
 
   if (totalClaims > 0) {
-    // Accurate claims contribute positively; conflicting claims heavily penalise
-    const positiveWeight = (accurateClaims || 0) / totalClaims;
-    const conflictPenalty = ((conflictingClaims || 0) * 2) / (totalClaims + 1);
+    const positiveWeight    = (accurateClaims || 0) / totalClaims;
+    const conflictPenalty   = ((conflictingClaims || 0) * 2) / (totalClaims + 1);
     const unverifiablePenalty = (unverifiableClaims || 0) / (totalClaims * 2 + 1);
     const claimRatio = Math.max(0, positiveWeight - conflictPenalty - unverifiablePenalty);
     score += claimRatio * 50;
   } else {
-    // No verification data — apply a neutral baseline
-    score += 20;
+    // No verification data returned — apply a neutral baseline
+    // This is common for lesser-known brands where the model returns fewer claims
+    score += 22;
   }
 
-  // ── Linguistic confidence component ──
-  const highConfidenceCount = countSignals(primaryText, HIGH_CONFIDENCE_LANGUAGE);
-  const lowConfidenceCount  = countSignals(primaryText, LOW_CONFIDENCE_LANGUAGE);
-  const linguisticNet = Math.min(highConfidenceCount * 3, 15) - Math.min(lowConfidenceCount * 2, 10);
-  score += Math.min(Math.max(linguisticNet + 10, 0), 25); // base 10, adjusted by net
+  // ── Linguistic confidence (0–25 points) ──
+  const highCount = countSignals(primaryText, HIGH_CONFIDENCE_LANGUAGE);
+  const lowCount  = countSignals(primaryText, LOW_CONFIDENCE_LANGUAGE);
+  const linguisticNet = Math.min(highCount * 3, 15) - Math.min(lowCount * 2, 10);
+  score += Math.min(Math.max(linguisticNet + 10, 0), 25);
 
-  // ── Self-reported confidence component ──
-  // Model reports 1–10; map to 0–25
-  const selfScore = rawConfidenceScore || 5;
+  // ── Self-reported confidence (0–25 points) ──
+  const selfScore = Math.min(Math.max(rawConfidenceScore || 5, 1), 10);
   score += ((selfScore - 1) / 9) * 25;
 
-  // ── Penalty: if model said it does not know the brand, accuracy is capped ──
+  // ── Cap if model expressed strong ignorance ──
   const negativeCount = countSignals(primaryText.toLowerCase(), RECOGNITION_NEGATIVE_SIGNALS);
-  if (negativeCount >= 2) {
-    score = Math.min(score, 20);
-  }
+  if (negativeCount >= 2) score = Math.min(score, 20);
 
   return clamp(score);
 }
 
+// ─── CONFIDENCE SCORER ────────────────────────────────────────────────────────
+
 /**
- * Score the CONFIDENCE dimension (0–100).
+ * Score CONFIDENCE (0–100).
  *
- * Confidence measures how certain and assertive the AI engine is in its
- * statements about the brand. This is distinct from accuracy — an engine
- * can be confidently wrong, or accurately hedging. High confidence means
- * the engine speaks about the brand in declarative, authoritative sentences.
+ * Confidence measures how assertively the AI speaks about the brand.
+ * A highly confident response makes declarative statements without
+ * constant hedging. A low-confidence response is full of "I think",
+ * "possibly", "I'm not sure".
  *
- * Scoring breakdown:
- *   Self-reported confidence (1–10 → 0–60):  0–60 points
- *   Linguistic confidence markers:            0–25 points
- *   Absence of negative recognition:          0–15 points bonus
- *
- * @param {string} primaryText
- * @param {number} rawConfidenceScore - model's self-reported 1–10 score
- * @returns {number} 0–100
+ * Note: confidence is distinct from accuracy. An AI can be confidently
+ * wrong (high confidence, low accuracy) or accurately uncertain
+ * (low confidence, high accuracy). Both are valid and scored separately.
  */
 function scoreConfidence(primaryText, rawConfidenceScore) {
   if (!primaryText || primaryText.trim().length < 10) return 0;
 
   let score = 0;
 
-  // ── Self-reported score (1–10) maps to 0–60 points ──
+  // ── Self-reported confidence (1–10 → 0–55) ──
   const selfScore = Math.min(Math.max(rawConfidenceScore || 5, 1), 10);
-  score += ((selfScore - 1) / 9) * 60;
+  score += ((selfScore - 1) / 9) * 55;
 
-  // ── Linguistic confidence markers ──
+  // ── Linguistic markers (0–30) ──
   const highCount = countSignals(primaryText, HIGH_CONFIDENCE_LANGUAGE);
   const lowCount  = countSignals(primaryText, LOW_CONFIDENCE_LANGUAGE);
   const linguisticScore = Math.min(highCount * 3, 20) - Math.min(lowCount * 2, 15);
-  score += Math.min(Math.max(linguisticScore + 10, 0), 25);
+  score += Math.min(Math.max(linguisticScore + 12, 0), 30);
 
-  // ── Absence of strong negative recognition ──
+  // ── No negative signals = confidence bonus (+15) ──
   const negativeCount = countSignals(primaryText.toLowerCase(), RECOGNITION_NEGATIVE_SIGNALS);
-  if (negativeCount === 0) {
-    score += 15;
-  } else if (negativeCount === 1) {
-    score += 5;
-  } else {
-    score -= negativeCount * 8;
-  }
+  if (negativeCount === 0)      score += 15;
+  else if (negativeCount === 1) score += 5;
+  else                          score -= negativeCount * 8;
 
   return clamp(score);
 }
 
-/**
- * Compute the overall awareness score from the four dimension scores.
- * Uses the DIMENSION_WEIGHTS defined at the top of this file.
- *
- * @param {number} recognition
- * @param {number} depth
- * @param {number} accuracy
- * @param {number} confidence
- * @returns {number} 0–100
- */
+// ─── OVERALL SCORE ────────────────────────────────────────────────────────────
+
 function scoreOverall(recognition, depth, accuracy, confidence) {
   const raw =
     (recognition * DIMENSION_WEIGHTS.recognition) +
     (depth       * DIMENSION_WEIGHTS.depth)       +
     (accuracy    * DIMENSION_WEIGHTS.accuracy)    +
     (confidence  * DIMENSION_WEIGHTS.confidence);
-
   return clamp(raw);
 }
 
 // ─── TIER CLASSIFIER ─────────────────────────────────────────────────────────
 
 /**
- * Classify an overall score into a named tier.
+ * Classify an overall score into a named awareness tier.
  * Tiers match exactly what the frontend renders.
- *
- * @param {number} score
- * @returns {{ tier: string, tierClass: string, description: string }}
+ * Each tier includes a plain-language description for display.
  */
 function classifyTier(score) {
   if (score >= 91) return {
     tier: 'WELL KNOWN',
     tierClass: 'tier-well-known',
-    description: 'This brand has strong, detailed, and consistent AI awareness across all tested engines. Minimal action required — focus on maintaining currency of information.'
+    description: 'Strong, detailed awareness across tested AI engines. The AI ecosystem has a rich, accurate model of this brand. Focus on maintaining currency rather than building.'
   };
   if (score >= 76) return {
     tier: 'KNOWN',
     tierClass: 'tier-known',
-    description: 'This brand is recognised and reasonably well described by AI systems. Some depth gaps or accuracy inconsistencies exist that could be improved.'
+    description: 'Solid AI awareness with some depth or consistency gaps. The brand is clearly recognised and described but certain dimensions could be strengthened.'
   };
   if (score >= 51) return {
     tier: 'PARTIALLY KNOWN',
     tierClass: 'tier-partial',
-    description: 'This brand has limited but present AI awareness. Key facts are missing or inaccurate across one or more engines. Significant content and signal work is recommended.'
+    description: 'Present but limited AI awareness. The brand registers in AI systems but descriptions are thin, hedged, or inconsistent. Targeted content and signal work is recommended.'
   };
   if (score >= 26) return {
     tier: 'MINIMALLY KNOWN',
     tierClass: 'tier-partial',
-    description: 'This brand is barely recognised by AI systems. Awareness is fragile and easily displaced. Foundational AI visibility work is needed urgently.'
+    description: 'Fragile AI awareness. The brand barely surfaces in AI responses. Foundational brand signal work is needed before consistency or depth can be built.'
   };
   return {
     tier: 'NOT KNOWN',
     tierClass: 'tier-unknown',
-    description: 'AI systems have no meaningful knowledge of this brand. The brand has no footprint in AI training data or its footprint is too small to surface. Immediate and comprehensive brand signal work is required.'
+    description: 'No meaningful AI awareness detected. The brand has no footprint in AI training data, or its footprint is too small to reliably surface. Immediate and comprehensive brand signal work is required.'
   };
 }
 
 // ─── MAIN EXPORT: scoreAllEngines ────────────────────────────────────────────
 
 /**
- * Score all engine query results and produce the per-engine scored objects
- * plus the overall aggregated score.
- *
- * Input: the results map from queryAllEngines()
- * Output: the scored data structure ready for consistency, gap, and
- *         recommendation analysis, and ultimately for the frontend response.
- *
- * @param {Object.<string, {
- *   primaryText: string,
- *   narrative: string,
- *   rawConfidenceScore: number,
- *   accurateClaims: number,
- *   conflictingClaims: number,
- *   unverifiableClaims: number,
- *   topicsKnown: string[],
- *   topicsUnknown: string[],
- *   error: string|null
- * }>} engineResults - output from queryAllEngines()
- *
- * @returns {{
- *   scoredEngines: Object.<string, {
- *     score: number,
- *     recognition: number,
- *     depth: number,
- *     accuracy: number,
- *     confidence: number,
- *     narrative: string,
- *     accurateClaims: number,
- *     conflictingClaims: number,
- *     unverifiableClaims: number,
- *     topicsKnown: string[],
- *     topicsUnknown: string[],
- *     primaryText: string,
- *     failed: boolean,
- *     error: string|null
- *   }>,
- *   overallScore: number,
- *   tier: string,
- *   tierClass: string,
- *   tierDescription: string
- * }}
+ * Score every engine result and produce the complete scored output.
+ * This is the only function called by the handler.
  */
 function scoreAllEngines(engineResults) {
   const scoredEngines = {};
@@ -605,31 +670,21 @@ function scoreAllEngines(engineResults) {
 
   for (const [engine, result] of Object.entries(engineResults)) {
 
-    // If the engine returned an error with no text, record a zero-scored failed entry
+    // Engine failed — zero-scored failed entry
     if (result.error && (!result.primaryText || result.primaryText.trim().length < 20)) {
       scoredEngines[engine] = {
-        score:              0,
-        recognition:        0,
-        depth:              0,
-        accuracy:           0,
-        confidence:         0,
-        narrative:          result.error
-                              ? `This engine could not be reached: ${result.error}`
-                              : 'No response received from this engine.',
-        accurateClaims:     0,
-        conflictingClaims:  0,
-        unverifiableClaims: 0,
-        topicsKnown:        [],
-        topicsUnknown:      [],
-        primaryText:        '',
-        failed:             true,
-        error:              result.error || 'No response'
+        score: 0, recognition: 0, depth: 0, accuracy: 0, confidence: 0,
+        narrative: result.error
+          ? `This engine could not be reached: ${result.error}`
+          : 'No response received from this engine.',
+        accurateClaims: 0, conflictingClaims: 0, unverifiableClaims: 0,
+        topicsKnown: [], topicsUnknown: [],
+        primaryText: '', failed: true, error: result.error || 'No response'
       };
       logger.warn(`Scoring: engine ${engine} marked as failed — ${result.error}`);
       continue;
     }
 
-    // ── Compute four dimension scores ──
     const recognition = scoreRecognition(result.primaryText);
     const depth       = scoreDepth(
       result.primaryText,
@@ -646,8 +701,6 @@ function scoreAllEngines(engineResults) {
       result.rawConfidenceScore
     );
     const confidence  = scoreConfidence(result.primaryText, result.rawConfidenceScore);
-
-    // ── Compute weighted overall score for this engine ──
     const engineScore = scoreOverall(recognition, depth, accuracy, confidence);
 
     logger.info(
@@ -656,12 +709,12 @@ function scoreAllEngines(engineResults) {
     );
 
     scoredEngines[engine] = {
-      score:              engineScore,
+      score: engineScore,
       recognition,
       depth,
       accuracy,
       confidence,
-      narrative:          result.narrative || 'No narrative available.',
+      narrative:          result.narrative          || 'No narrative available.',
       accurateClaims:     result.accurateClaims     || 0,
       conflictingClaims:  result.conflictingClaims  || 0,
       unverifiableClaims: result.unverifiableClaims || 0,
@@ -672,21 +725,15 @@ function scoreAllEngines(engineResults) {
       error:              result.error || null
     };
 
-    // Collect successful engine scores for overall calculation
-    // Failed / zero-score engines are excluded from the aggregate
-    // so one bad engine doesn't drag down a legitimate overall score
-    if (!result.error) {
-      engineScores.push(engineScore);
-    }
+    if (!result.error) engineScores.push(engineScore);
   }
 
-  // ── Aggregate overall score ──
-  // Use the mean of all successful engine scores.
-  // If no engines succeeded, overall is 0.
+  // Overall = mean of all successful engine scores
   let overallScore = 0;
   if (engineScores.length > 0) {
-    const sum = engineScores.reduce((a, b) => a + b, 0);
-    overallScore = clamp(Math.round(sum / engineScores.length));
+    overallScore = clamp(Math.round(
+      engineScores.reduce((a, b) => a + b, 0) / engineScores.length
+    ));
   }
 
   const { tier, tierClass, description: tierDescription } = classifyTier(overallScore);
@@ -696,26 +743,17 @@ function scoreAllEngines(engineResults) {
     `Overall: ${overallScore} | Tier: ${tier}`
   );
 
-  return {
-    scoredEngines,
-    overallScore,
-    tier,
-    tierClass,
-    tierDescription
-  };
+  return { scoredEngines, overallScore, tier, tierClass, tierDescription };
 }
 
 module.exports = {
   scoreAllEngines,
-  // Export individual scorers for unit testing
   scoreRecognition,
   scoreDepth,
   scoreAccuracy,
   scoreConfidence,
   scoreOverall,
   classifyTier,
-  // Export helpers for unit testing
   countSignals,
-  countPatternMatches,
   countMeaningfulWords
 };
