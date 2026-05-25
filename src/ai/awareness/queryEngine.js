@@ -3,95 +3,132 @@
 const logger = require('../../utils/logger');
 
 // ─── API ENDPOINTS ────────────────────────────────────────────────────────────
-const GROQ_API_URL    = 'https://api.groq.com/openai/v1/chat/completions';
-const GEMINI_API_URL  = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-const OPENAI_API_URL  = 'https://api.openai.com/v1/chat/completions';
-const ANTHROPIC_URL   = 'https://api.anthropic.com/v1/messages';
+const GROQ_API_URL   = 'https://api.groq.com/openai/v1/chat/completions';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+const ANTHROPIC_URL  = 'https://api.anthropic.com/v1/messages';
 
 // ─── MODEL IDENTIFIERS ────────────────────────────────────────────────────────
 const MODELS = {
-  meta:    'llama-3.1-70b-versatile',   // Groq-hosted Llama 3.1 70B → represents Meta AI
-  mistral: 'mixtral-8x7b-32768',        // Groq-hosted Mixtral 8x7B  → represents Mistral
-  google:  'gemini-1.5-flash',          // Gemini 1.5 Flash           → represents Google AI
-  chatgpt: 'gpt-4o',                    // OpenAI GPT-4o              → represents ChatGPT
-  claude:  'claude-3-5-sonnet-20241022' // Anthropic Claude 3.5 Sonnet → represents Claude
+  meta:    'llama-3.1-70b-versatile',
+  mistral: 'mixtral-8x7b-32768',
+  google:  'gemini-1.5-flash',
+  chatgpt: 'gpt-4o',
+  claude:  'claude-3-5-sonnet-20241022'
 };
 
-// ─── REQUEST LIMITS ───────────────────────────────────────────────────────────
-const TIMEOUT_MS      = 30000;  // 30 seconds per engine request
-const MAX_TOKENS      = 1024;   // enough for a thorough brand narrative
-const TEMPERATURE     = 0.3;    // low temperature = more factual, less creative
+// ─── REQUEST PARAMETERS ───────────────────────────────────────────────────────
+const TIMEOUT_MS  = 35000;
+const MAX_TOKENS  = 1200;
+// Temperature 0.4 — slightly higher than pure factual mode so the model
+// draws on its full training signal including informal cultural knowledge,
+// not just its encyclopaedic fact recall mode
+const TEMPERATURE = 0.4;
 
-// ─── PROMPT CONSTRUCTION ─────────────────────────────────────────────────────
+// ─── PRIMARY AWARENESS PROBE ──────────────────────────────────────────────────
 /**
- * Build the primary brand awareness probe prompt.
- * This prompt is deliberately structured to elicit five measurable dimensions:
- *   1. Recognition  — does the model know the brand exists
- *   2. Description  — what the brand does
- *   3. Reputation   — how it is perceived
- *   4. Details      — factual specifics (founding, products, team, location)
- *   5. Limitations  — honest acknowledgement of uncertainty
+ * The primary prompt is the most important design decision in this entire system.
  *
- * The prompt is sent as the USER message. No system role manipulation is applied
- * because different model families handle system prompts differently and we want
- * consistent, comparable outputs across all five engines.
+ * DESIGN PRINCIPLES:
  *
- * @param {string} domain - The full normalised domain string e.g. "stripe.com"
+ * 1. DO NOT force a rigid numbered structure for the main response.
+ *    Numbered lists push AI models into encyclopaedia/Wikipedia mode where
+ *    they only surface formal facts. We want them to draw on ALL of their
+ *    training signal — forums, social media, community discussions, reviews,
+ *    comparisons, tutorials, casual mentions, cultural references.
+ *
+ * 2. Explicitly invite informal knowledge.
+ *    Ask about community perception, how people talk about it online,
+ *    social media presence, recommendations in communities. This unlocks
+ *    the training signal that comes from Reddit, Twitter/X, YouTube,
+ *    TikTok, Hacker News, Product Hunt, Discord, review sites, blogs.
+ *
+ * 3. Ask open-ended perception questions before fact questions.
+ *    Perception questions activate the model's associative/cultural memory.
+ *    Fact questions activate its encyclopaedic memory.
+ *    We want both, but informal/cultural comes first.
+ *
+ * 4. Never penalise absence of intrinsic facts.
+ *    The prompt must make clear that knowing a brand casually is as
+ *    valid as knowing its founding year. "I've seen this recommended on
+ *    Reddit constantly" is valuable AI awareness data.
+ *
+ * 5. Ask the model to be honest about confidence level without
+ *    creating anxiety about it — anxious models over-hedge everything.
+ *
+ * @param {string} domain - normalised domain e.g. "stripe.com"
  * @returns {string}
  */
 function buildAwarenessPrompt(domain) {
-  return `I want to understand what you know about the brand or organisation behind the domain: ${domain}
+  return `Tell me everything you know about the brand, product, company, or website at: ${domain}
 
-Please answer the following questions in sequence, clearly numbered:
+Write freely and naturally — do not worry about whether your knowledge is formal or informal. Both count equally. If you know this brand from seeing it discussed on Reddit, Twitter, YouTube, TikTok, Hacker News, review sites, or anywhere else online — that knowledge is valuable and I want to hear it.
 
-1. RECOGNITION: Do you know this brand or website? State clearly: yes, no, or partially.
+Cover as many of these as you genuinely have knowledge on. You do not need to cover all of them — only write about what you actually know:
 
-2. DESCRIPTION: In 2–3 sentences, describe what this brand does, what industry it operates in, and who its primary audience is.
+— What this brand is, what it does, and what category or industry it belongs to
+— Who typically uses it and why — their demographic, job role, or situation
+— How people generally talk about it online — the tone, sentiment, and general reputation in communities
+— Whether it gets recommended — in forums, communities, social media, or by influencers or creators
+— How it compares to alternatives or competitors that people discuss it alongside
+— Any notable moments, controversies, launches, viral events, or cultural references associated with it
+— What people typically say they love about it or dislike about it
+— Any factual details you happen to know — founding, location, founders, funding, size — but only if you genuinely know them, not guessed
+— Your honest assessment of how well-known this brand is across the internet and AI ecosystem
 
-3. REPUTATION: How is this brand generally perceived? Mention any notable achievements, controversies, partnerships, or public recognition if you are aware of them.
+If you have strong knowledge, write several paragraphs. If your knowledge is thin or uncertain, say so clearly and say what you do and do not know. Do not fabricate or speculate — but do not suppress real knowledge just because it came from informal sources.
 
-4. DETAILS: List any specific factual details you know — such as founding year, headquarters location, key products or services, notable founders or executives, funding or revenue figures, or major milestones.
-
-5. CONFIDENCE: On a scale of 1–10, how confident are you in the accuracy of what you have written above? Explain briefly why.
-
-6. GAPS: What do you NOT know about this brand that a well-informed person would expect you to know?
-
-Be factual and honest. If you have no information about this domain, say so clearly rather than speculating or fabricating details.`;
+Be honest about your confidence at the end: how certain are you about what you wrote, on a scale of 1 to 10?`;
 }
 
+// ─── STRUCTURED SIGNAL EXTRACTION PROMPT ──────────────────────────────────────
 /**
- * Build a secondary verification prompt used after the primary response
- * to extract structured claim counts for scoring.
- * This is sent as a follow-up in the same conversation to leverage context.
+ * The second-turn prompt extracts structured signals from the free-form
+ * primary response. It is deliberately designed to capture BOTH formal
+ * and informal knowledge dimensions.
  *
- * @param {string} primaryResponse - The model's answer to the primary prompt
+ * New fields added vs the original:
+ *   SENTIMENT           — overall emotional tone of what the AI knows
+ *   COMMUNITY_PRESENT   — does the AI have community/social knowledge
+ *   RECOMMENDED         — does the AI's knowledge include recommendation signals
+ *   SOCIAL_FOOTPRINT    — is there social media / creator / influencer signal
+ *   VIRALITY_SIGNAL     — any viral moments, memes, cultural events known
+ *   INFORMAL_SCORE      — 1-10 rating of how rich the informal/social knowledge is
+ *   FORMAL_SCORE        — 1-10 rating of how rich the formal/factual knowledge is
+ *
+ * This separation is critical — a brand can score 9 on INFORMAL_SCORE and
+ * 2 on FORMAL_SCORE and that is a completely legitimate, high-value result.
+ *
+ * @param {string} primaryResponse
  * @returns {string}
  */
 function buildVerificationPrompt(primaryResponse) {
-  return `Based on your answer above, please now provide a structured summary in this exact format — do not deviate from it:
+  return `Based on what you just wrote, now provide a structured signal extraction. Use exactly this format — one value per line, nothing else:
 
-ACCURATE_CLAIMS: [number] — count of factual statements you are highly confident are correct
-CONFLICTING_CLAIMS: [number] — count of statements that may contradict known facts or that you hedged
-UNVERIFIABLE_CLAIMS: [number] — count of statements you cannot verify but included anyway
-TOPICS_KNOWN: [comma-separated list of up to 6 topic areas you have solid knowledge on for this brand]
-TOPICS_UNKNOWN: [comma-separated list of up to 6 topic areas you have little or no knowledge on for this brand]
+RECOGNITION: [yes / no / partial] — do you recognise this brand at all
+ACCURATE_CLAIMS: [number] — factual statements you are highly confident are correct
+CONFLICTING_CLAIMS: [number] — statements you hedged or that may contradict known facts
+UNVERIFIABLE_CLAIMS: [number] — statements you included but cannot verify
+TOPICS_KNOWN: [comma-separated list, up to 8] — topic areas you have solid knowledge on for this brand
+TOPICS_UNKNOWN: [comma-separated list, up to 6] — topic areas you have little or no knowledge on
+SENTIMENT: [positive / negative / mixed / neutral / unknown] — overall sentiment in what you wrote
+COMMUNITY_PRESENT: [yes / no] — do you have any community, forum, or social knowledge about this brand
+RECOMMENDED: [yes / no / unclear] — does your knowledge include people recommending this brand
+SOCIAL_FOOTPRINT: [strong / moderate / weak / none] — how strong is the social or creator-driven knowledge
+VIRALITY_SIGNAL: [yes / no] — do you know of any viral moments, memes, or cultural events for this brand
+INFORMAL_SCORE: [1-10] — how rich is your informal, social, and community knowledge of this brand
+FORMAL_SCORE: [1-10] — how rich is your formal, factual, encyclopaedic knowledge of this brand
+CONFIDENCE: [1-10] — overall confidence in the accuracy of what you wrote
 
-Reply with only this structured block. Nothing else.`;
+Reply with only these 14 lines. No other text.`;
 }
 
-// ─── FETCH HELPERS ────────────────────────────────────────────────────────────
-
+// ─── FETCH WRAPPER ────────────────────────────────────────────────────────────
 /**
- * Generic fetch wrapper with timeout and structured error handling.
- * Returns { ok, status, data } — never throws.
- *
- * @param {string} url
- * @param {object} options - fetch options
- * @param {string} engineName - for logging only
- * @returns {Promise<{ok: boolean, status: number, data: object|null, error: string|null}>}
+ * Generic fetch with timeout. Returns structured result — never throws.
  */
 async function safeFetch(url, options, engineName) {
-  const controller = new AbortController();
+  const controller  = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
@@ -99,8 +136,8 @@ async function safeFetch(url, options, engineName) {
     const data = await response.json().catch(() => null);
 
     if (!response.ok) {
-      const msg = (data && data.error && data.error.message) ||
-                  (data && data.message) ||
+      const msg = (data?.error?.message) ||
+                  (data?.message) ||
                   `HTTP ${response.status}`;
       logger.warn(`[${engineName}] API error: ${msg}`);
       return { ok: false, status: response.status, data: null, error: msg };
@@ -110,7 +147,7 @@ async function safeFetch(url, options, engineName) {
 
   } catch (err) {
     if (err.name === 'AbortError') {
-      logger.warn(`[${engineName}] Request timed out after ${TIMEOUT_MS}ms`);
+      logger.warn(`[${engineName}] Timed out after ${TIMEOUT_MS}ms`);
       return { ok: false, status: 0, data: null, error: `Request timed out after ${TIMEOUT_MS}ms` };
     }
     logger.warn(`[${engineName}] Fetch error: ${err.message}`);
@@ -121,22 +158,15 @@ async function safeFetch(url, options, engineName) {
   }
 }
 
-// ─── GROQ ENGINE (Meta AI via Llama 3.1 / Mistral via Mixtral) ───────────────
-
+// ─── GROQ ENGINE ─────────────────────────────────────────────────────────────
 /**
- * Query the Groq API with a two-turn conversation:
- *   Turn 1: primary brand awareness probe
- *   Turn 2: structured claim verification
- *
- * @param {string} domain
- * @param {string} model - MODELS.meta or MODELS.mistral
- * @param {string} engineLabel - human-readable engine name for logging
- * @returns {Promise<{primaryText: string, verificationText: string, error: string|null}>}
+ * Query Groq API (used for Meta AI via Llama 3.1 and Mistral via Mixtral).
+ * Two-turn conversation: primary probe then structured signal extraction.
  */
 async function queryGroq(domain, model, engineLabel) {
   const groqKey = process.env.GROQ_API_KEY;
   if (!groqKey) {
-    logger.error(`GROQ_API_KEY is not set — cannot query ${engineLabel}`);
+    logger.error(`GROQ_API_KEY not set — cannot query ${engineLabel}`);
     return { primaryText: '', verificationText: '', error: 'GROQ_API_KEY not configured' };
   }
 
@@ -145,18 +175,16 @@ async function queryGroq(domain, model, engineLabel) {
     'Authorization': `Bearer ${groqKey}`
   };
 
-  // ── Turn 1: primary probe ──
-  logger.info(`[${engineLabel}] Sending primary awareness probe for domain: ${domain}`);
+  // ── Turn 1: open-ended awareness probe ──
+  logger.info(`[${engineLabel}] Sending awareness probe — domain: ${domain}`);
 
   const primaryPayload = {
     model,
-    messages: [
-      { role: 'user', content: buildAwarenessPrompt(domain) }
-    ],
-    max_tokens: MAX_TOKENS,
+    messages: [{ role: 'user', content: buildAwarenessPrompt(domain) }],
+    max_tokens:  MAX_TOKENS,
     temperature: TEMPERATURE,
-    top_p: 0.9,
-    stream: false
+    top_p:       0.92,
+    stream:      false
   };
 
   const primaryResult = await safeFetch(
@@ -169,18 +197,16 @@ async function queryGroq(domain, model, engineLabel) {
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
 
-  const primaryText = (
-    primaryResult.data?.choices?.[0]?.message?.content || ''
-  ).trim();
+  const primaryText = (primaryResult.data?.choices?.[0]?.message?.content || '').trim();
 
   if (!primaryText) {
     logger.warn(`[${engineLabel}] Empty primary response`);
     return { primaryText: '', verificationText: '', error: 'Empty response from model' };
   }
 
-  logger.info(`[${engineLabel}] Primary response received — ${primaryText.length} chars`);
+  logger.info(`[${engineLabel}] Primary response: ${primaryText.length} chars`);
 
-  // ── Turn 2: structured verification ──
+  // ── Turn 2: structured signal extraction ──
   const verificationPayload = {
     model,
     messages: [
@@ -188,9 +214,9 @@ async function queryGroq(domain, model, engineLabel) {
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
     ],
-    max_tokens: 300,
-    temperature: 0.1,  // near-zero temperature for structured extraction
-    stream: false
+    max_tokens:  400,
+    temperature: 0.05,  // near-zero for deterministic structured extraction
+    stream:      false
   };
 
   const verificationResult = await safeFetch(
@@ -203,47 +229,40 @@ async function queryGroq(domain, model, engineLabel) {
     ? (verificationResult.data?.choices?.[0]?.message?.content || '').trim()
     : '';
 
-  logger.info(`[${engineLabel}] Verification response received — ${verificationText.length} chars`);
+  logger.info(`[${engineLabel}] Verification: ${verificationText.length} chars`);
 
   return { primaryText, verificationText, error: null };
 }
 
-// ─── GEMINI ENGINE (Google AI) ────────────────────────────────────────────────
-
+// ─── GEMINI ENGINE ────────────────────────────────────────────────────────────
 /**
- * Query the Gemini 1.5 Flash API.
- * Gemini uses a different request/response shape from OpenAI-compatible APIs.
- * We simulate a two-turn conversation using the `contents` array with roles.
- *
- * @param {string} domain
- * @returns {Promise<{primaryText: string, verificationText: string, error: string|null}>}
+ * Query Gemini 1.5 Flash (Google AI).
+ * Uses Gemini's native multi-turn content array format.
  */
 async function queryGemini(domain) {
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) {
-    logger.error('GEMINI_API_KEY is not set — cannot query Google AI');
+    logger.error('GEMINI_API_KEY not set — cannot query Google AI');
     return { primaryText: '', verificationText: '', error: 'GEMINI_API_KEY not configured' };
   }
 
-  const url = `${GEMINI_API_URL}?key=${geminiKey}`;
+  const url     = `${GEMINI_API_URL}?key=${geminiKey}`;
   const headers = { 'Content-Type': 'application/json' };
 
   const generationConfig = {
-    temperature: TEMPERATURE,
-    topP: 0.9,
+    temperature:     TEMPERATURE,
+    topP:            0.92,
     maxOutputTokens: MAX_TOKENS
   };
 
-  // ── Turn 1: primary probe ──
-  logger.info(`[Google AI] Sending primary awareness probe for domain: ${domain}`);
+  logger.info(`[Google AI] Sending awareness probe — domain: ${domain}`);
 
+  // ── Turn 1 ──
   const primaryPayload = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: buildAwarenessPrompt(domain) }]
-      }
-    ],
+    contents: [{
+      role:  'user',
+      parts: [{ text: buildAwarenessPrompt(domain) }]
+    }],
     generationConfig
   };
 
@@ -257,38 +276,30 @@ async function queryGemini(domain) {
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
 
-  // Gemini response structure: candidates[0].content.parts[0].text
   const primaryText = (
     primaryResult.data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
   ).trim();
 
   if (!primaryText) {
-    // Check for safety blocks
-    const blockReason = primaryResult.data?.candidates?.[0]?.finishReason;
-    const safetyRatings = primaryResult.data?.candidates?.[0]?.safetyRatings;
-    logger.warn(`[Google AI] Empty response. Finish reason: ${blockReason}. Safety: ${JSON.stringify(safetyRatings)}`);
-    return { primaryText: '', verificationText: '', error: `Model returned empty response (${blockReason || 'unknown reason'})` };
+    const finishReason = primaryResult.data?.candidates?.[0]?.finishReason;
+    logger.warn(`[Google AI] Empty response. Finish reason: ${finishReason}`);
+    return {
+      primaryText: '',
+      verificationText: '',
+      error: `Empty response from Gemini (${finishReason || 'unknown reason'})`
+    };
   }
 
-  logger.info(`[Google AI] Primary response received — ${primaryText.length} chars`);
+  logger.info(`[Google AI] Primary response: ${primaryText.length} chars`);
 
-  // ── Turn 2: structured verification (multi-turn) ──
+  // ── Turn 2: structured signal extraction ──
   const verificationPayload = {
     contents: [
-      {
-        role: 'user',
-        parts: [{ text: buildAwarenessPrompt(domain) }]
-      },
-      {
-        role: 'model',
-        parts: [{ text: primaryText }]
-      },
-      {
-        role: 'user',
-        parts: [{ text: buildVerificationPrompt(primaryText) }]
-      }
+      { role: 'user',  parts: [{ text: buildAwarenessPrompt(domain) }] },
+      { role: 'model', parts: [{ text: primaryText }] },
+      { role: 'user',  parts: [{ text: buildVerificationPrompt(primaryText) }] }
     ],
-    generationConfig: { ...generationConfig, temperature: 0.1, maxOutputTokens: 300 }
+    generationConfig: { ...generationConfig, temperature: 0.05, maxOutputTokens: 400 }
   };
 
   const verificationResult = await safeFetch(
@@ -301,41 +312,28 @@ async function queryGemini(domain) {
     ? (verificationResult.data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
     : '';
 
-  logger.info(`[Google AI] Verification response received — ${verificationText.length} chars`);
+  logger.info(`[Google AI] Verification: ${verificationText.length} chars`);
 
   return { primaryText, verificationText, error: null };
 }
 
-// ─── OPENAI ENGINE (ChatGPT — user-supplied key) ──────────────────────────────
-
-/**
- * Query OpenAI GPT-4o using the user's own API key.
- * The key is never stored server-side — it comes from the request payload
- * and is used once for this request only.
- *
- * @param {string} domain
- * @param {string} userOpenAIKey - the key provided by the user in the frontend
- * @returns {Promise<{primaryText: string, verificationText: string, error: string|null}>}
- */
+// ─── OPENAI ENGINE (user key) ─────────────────────────────────────────────────
 async function queryOpenAI(domain, userOpenAIKey) {
-  if (!userOpenAIKey || typeof userOpenAIKey !== 'string' || userOpenAIKey.length < 20) {
+  if (!userOpenAIKey || typeof userOpenAIKey !== 'string' || userOpenAIKey.trim().length < 20) {
     return { primaryText: '', verificationText: '', error: 'Invalid or missing OpenAI API key' };
   }
 
   const headers = {
-    'Content-Type': 'application/json',
+    'Content-Type':  'application/json',
     'Authorization': `Bearer ${userOpenAIKey.trim()}`
   };
 
-  logger.info(`[ChatGPT] Sending primary awareness probe for domain: ${domain}`);
+  logger.info(`[ChatGPT] Sending awareness probe — domain: ${domain}`);
 
-  // ── Turn 1 ──
   const primaryPayload = {
-    model: MODELS.chatgpt,
-    messages: [
-      { role: 'user', content: buildAwarenessPrompt(domain) }
-    ],
-    max_tokens: MAX_TOKENS,
+    model:       MODELS.chatgpt,
+    messages:    [{ role: 'user', content: buildAwarenessPrompt(domain) }],
+    max_tokens:  MAX_TOKENS,
     temperature: TEMPERATURE
   };
 
@@ -346,7 +344,6 @@ async function queryOpenAI(domain, userOpenAIKey) {
   );
 
   if (!primaryResult.ok) {
-    // Differentiate auth errors from generic errors
     if (primaryResult.status === 401) {
       return { primaryText: '', verificationText: '', error: 'OpenAI API key is invalid or expired' };
     }
@@ -356,26 +353,22 @@ async function queryOpenAI(domain, userOpenAIKey) {
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
 
-  const primaryText = (
-    primaryResult.data?.choices?.[0]?.message?.content || ''
-  ).trim();
-
+  const primaryText = (primaryResult.data?.choices?.[0]?.message?.content || '').trim();
   if (!primaryText) {
     return { primaryText: '', verificationText: '', error: 'Empty response from GPT-4o' };
   }
 
-  logger.info(`[ChatGPT] Primary response received — ${primaryText.length} chars`);
+  logger.info(`[ChatGPT] Primary response: ${primaryText.length} chars`);
 
-  // ── Turn 2 ──
   const verificationPayload = {
-    model: MODELS.chatgpt,
-    messages: [
+    model:       MODELS.chatgpt,
+    messages:    [
       { role: 'user',      content: buildAwarenessPrompt(domain) },
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
     ],
-    max_tokens: 300,
-    temperature: 0.1
+    max_tokens:  400,
+    temperature: 0.05
   };
 
   const verificationResult = await safeFetch(
@@ -391,38 +384,25 @@ async function queryOpenAI(domain, userOpenAIKey) {
   return { primaryText, verificationText, error: null };
 }
 
-// ─── ANTHROPIC ENGINE (Claude — user-supplied key) ────────────────────────────
-
-/**
- * Query Anthropic Claude 3.5 Sonnet using the user's own API key.
- * Anthropic uses its own non-OpenAI-compatible API format.
- * Note: Anthropic requires the api-version header.
- *
- * @param {string} domain
- * @param {string} userAnthropicKey
- * @returns {Promise<{primaryText: string, verificationText: string, error: string|null}>}
- */
+// ─── ANTHROPIC ENGINE (user key) ──────────────────────────────────────────────
 async function queryAnthropic(domain, userAnthropicKey) {
-  if (!userAnthropicKey || typeof userAnthropicKey !== 'string' || userAnthropicKey.length < 20) {
+  if (!userAnthropicKey || typeof userAnthropicKey !== 'string' || userAnthropicKey.trim().length < 20) {
     return { primaryText: '', verificationText: '', error: 'Invalid or missing Anthropic API key' };
   }
 
   const headers = {
-    'Content-Type': 'application/json',
-    'x-api-key': userAnthropicKey.trim(),
+    'Content-Type':      'application/json',
+    'x-api-key':         userAnthropicKey.trim(),
     'anthropic-version': '2023-06-01'
   };
 
-  logger.info(`[Claude] Sending primary awareness probe for domain: ${domain}`);
+  logger.info(`[Claude] Sending awareness probe — domain: ${domain}`);
 
-  // ── Turn 1 ──
   const primaryPayload = {
-    model: MODELS.claude,
-    max_tokens: MAX_TOKENS,
+    model:       MODELS.claude,
+    max_tokens:  MAX_TOKENS,
     temperature: TEMPERATURE,
-    messages: [
-      { role: 'user', content: buildAwarenessPrompt(domain) }
-    ]
+    messages:    [{ role: 'user', content: buildAwarenessPrompt(domain) }]
   };
 
   const primaryResult = await safeFetch(
@@ -441,23 +421,18 @@ async function queryAnthropic(domain, userAnthropicKey) {
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
 
-  // Anthropic response: content[0].text
-  const primaryText = (
-    primaryResult.data?.content?.[0]?.text || ''
-  ).trim();
-
+  const primaryText = (primaryResult.data?.content?.[0]?.text || '').trim();
   if (!primaryText) {
     return { primaryText: '', verificationText: '', error: 'Empty response from Claude' };
   }
 
-  logger.info(`[Claude] Primary response received — ${primaryText.length} chars`);
+  logger.info(`[Claude] Primary response: ${primaryText.length} chars`);
 
-  // ── Turn 2 ──
   const verificationPayload = {
-    model: MODELS.claude,
-    max_tokens: 300,
-    temperature: 0.1,
-    messages: [
+    model:      MODELS.claude,
+    max_tokens: 400,
+    temperature: 0.05,
+    messages:   [
       { role: 'user',      content: buildAwarenessPrompt(domain) },
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
@@ -477,144 +452,241 @@ async function queryAnthropic(domain, userAnthropicKey) {
   return { primaryText, verificationText, error: null };
 }
 
-// ─── VERIFICATION TEXT PARSER ─────────────────────────────────────────────────
-
+// ─── VERIFICATION BLOCK PARSER ────────────────────────────────────────────────
 /**
- * Parse the structured verification block returned by the model's second turn.
- * The model is instructed to return a specific format — this function extracts
- * the values from that format using regex with generous fallback handling.
+ * Parse the 14-line structured verification block.
  *
- * Expected format example:
- *   ACCURATE_CLAIMS: 8
- *   CONFLICTING_CLAIMS: 1
- *   UNVERIFIABLE_CLAIMS: 2
- *   TOPICS_KNOWN: payments, SaaS, fintech, API infrastructure
- *   TOPICS_UNKNOWN: recent funding, executive changes, market share
+ * Captures both traditional claim counts AND the new informal/social
+ * signal dimensions: sentiment, community presence, recommendation signals,
+ * social footprint, virality, informal vs formal knowledge scores.
  *
- * @param {string} text - The raw verification response text
+ * All parsing uses generous regex with robust fallbacks — a missing or
+ * malformed line never crashes the parser.
+ *
+ * @param {string} text
  * @returns {{
+ *   recognition: string,
  *   accurateClaims: number,
  *   conflictingClaims: number,
  *   unverifiableClaims: number,
  *   topicsKnown: string[],
- *   topicsUnknown: string[]
+ *   topicsUnknown: string[],
+ *   sentiment: string,
+ *   communityPresent: boolean,
+ *   recommended: string,
+ *   socialFootprint: string,
+ *   viralitySignal: boolean,
+ *   informalScore: number,
+ *   formalScore: number,
+ *   confidence: number
  * }}
  */
 function parseVerificationBlock(text) {
   const defaults = {
+    recognition:        'unknown',
     accurateClaims:     0,
     conflictingClaims:  0,
     unverifiableClaims: 0,
     topicsKnown:        [],
-    topicsUnknown:      []
+    topicsUnknown:      [],
+    sentiment:          'unknown',
+    communityPresent:   false,
+    recommended:        'unclear',
+    socialFootprint:    'unknown',
+    viralitySignal:     false,
+    informalScore:      5,
+    formalScore:        5,
+    confidence:         5
   };
 
   if (!text || text.trim().length === 0) return defaults;
 
-  function extractInt(pattern) {
+  // ── Integer extractor ──
+  function extractInt(pattern, min = 0, max = 50) {
     const m = text.match(pattern);
     if (!m) return 0;
     const n = parseInt(m[1], 10);
-    return isNaN(n) ? 0 : Math.min(Math.max(n, 0), 50); // clamp 0–50
+    return isNaN(n) ? 0 : Math.min(Math.max(n, min), max);
   }
 
+  // ── Scale extractor (1–10) ──
+  function extractScale(pattern) {
+    const m = text.match(pattern);
+    if (!m) return 5;
+    const n = parseInt(m[1], 10);
+    return isNaN(n) ? 5 : Math.min(Math.max(n, 1), 10);
+  }
+
+  // ── Keyword extractor ──
+  function extractKeyword(pattern, validValues, defaultVal) {
+    const m = text.match(pattern);
+    if (!m || !m[1]) return defaultVal;
+    const val = m[1].trim().toLowerCase().replace(/[^a-z]/g, '');
+    return validValues.includes(val) ? val : defaultVal;
+  }
+
+  // ── List extractor ──
   function extractList(pattern) {
     const m = text.match(pattern);
     if (!m || !m[1]) return [];
     return m[1]
       .split(',')
       .map(s => s.replace(/[\[\]]/g, '').trim())
-      .filter(s => s.length > 0 && s !== 'none' && s !== 'N/A')
-      .slice(0, 8); // max 8 topics
+      .filter(s => s.length > 1 && s.toLowerCase() !== 'none' && s.toLowerCase() !== 'n/a')
+      .slice(0, 8);
+  }
+
+  // ── Boolean extractor ──
+  function extractBool(pattern) {
+    const m = text.match(pattern);
+    if (!m || !m[1]) return false;
+    return /yes|true|1/i.test(m[1].trim());
   }
 
   return {
+    recognition:        extractKeyword(/RECOGNITION\s*[:：]\s*(\w+)/i,
+                          ['yes', 'no', 'partial'], 'unknown'),
     accurateClaims:     extractInt(/ACCURATE_CLAIMS\s*[:：]\s*(\d+)/i),
     conflictingClaims:  extractInt(/CONFLICTING_CLAIMS\s*[:：]\s*(\d+)/i),
     unverifiableClaims: extractInt(/UNVERIFIABLE_CLAIMS\s*[:：]\s*(\d+)/i),
     topicsKnown:        extractList(/TOPICS_KNOWN\s*[:：]\s*(.+)/i),
-    topicsUnknown:      extractList(/TOPICS_UNKNOWN\s*[:：]\s*(.+)/i)
+    topicsUnknown:      extractList(/TOPICS_UNKNOWN\s*[:：]\s*(.+)/i),
+    sentiment:          extractKeyword(/SENTIMENT\s*[:：]\s*(\w+)/i,
+                          ['positive', 'negative', 'mixed', 'neutral', 'unknown'], 'unknown'),
+    communityPresent:   extractBool(/COMMUNITY_PRESENT\s*[:：]\s*(\w+)/i),
+    recommended:        extractKeyword(/RECOMMENDED\s*[:：]\s*(\w+)/i,
+                          ['yes', 'no', 'unclear'], 'unclear'),
+    socialFootprint:    extractKeyword(/SOCIAL_FOOTPRINT\s*[:：]\s*(\w+)/i,
+                          ['strong', 'moderate', 'weak', 'none', 'unknown'], 'unknown'),
+    viralitySignal:     extractBool(/VIRALITY_SIGNAL\s*[:：]\s*(\w+)/i),
+    informalScore:      extractScale(/INFORMAL_SCORE\s*[:：]\s*(\d+)/i),
+    formalScore:        extractScale(/FORMAL_SCORE\s*[:：]\s*(\d+)/i),
+    confidence:         extractScale(/CONFIDENCE\s*[:：]\s*(\d+)/i)
   };
 }
 
 // ─── NARRATIVE EXTRACTOR ──────────────────────────────────────────────────────
-
 /**
- * Extract the clean narrative portion from the model's primary response.
- * The model returns a structured numbered list. We extract sections 1–4
- * and combine them into a readable narrative paragraph.
+ * Extract the display narrative from the model's primary response.
  *
- * Also extracts the self-reported confidence score (1–10) from section 5.
+ * DESIGN: Because the primary prompt is now open-ended and conversational,
+ * the model's response will be flowing prose — not a numbered list.
+ * The extractor preserves this natural tone rather than stripping structure.
  *
- * @param {string} primaryText - The model's full primary response
+ * It trims to a display-appropriate length (700 chars), preserves paragraph
+ * breaks, and extracts the self-reported confidence score from wherever
+ * the model mentioned it (no longer locked to "section 5").
+ *
+ * @param {string} primaryText
  * @returns {{ narrative: string, rawConfidenceScore: number }}
  */
 function extractNarrative(primaryText) {
   if (!primaryText || primaryText.trim().length === 0) {
-    return { narrative: 'No response received from this engine.', rawConfidenceScore: 0 };
+    return {
+      narrative: 'No response received from this engine.',
+      rawConfidenceScore: 0
+    };
   }
 
-  // Extract self-reported confidence (1–10) from section 5
-  let rawConfidenceScore = 5; // default to mid
-  const confMatch = primaryText.match(
-    /5[\.\)]\s*CONFIDENCE[:\s]+.*?(\b([1-9]|10)\b)/is
-  );
-  if (confMatch) {
-    const n = parseInt(confMatch[2] || confMatch[1], 10);
-    if (!isNaN(n) && n >= 1 && n <= 10) rawConfidenceScore = n;
+  // ── Extract self-reported confidence ──
+  // The model can mention this anywhere in free-form prose
+  let rawConfidenceScore = 5;
+  const confPatterns = [
+    /confidence[:\s]+(\b([1-9]|10)\b)/i,
+    /(\b([1-9]|10)\b)\s*(?:out of|\/)\s*10/i,
+    /rate\s+(?:my\s+)?(?:confidence|certainty)[:\s]+(\b([1-9]|10)\b)/i,
+    /(?:i.d\s+say|i\s+(?:would\s+)?rate(?:\s+this)?)[:\s]+(\b([1-9]|10)\b)/i
+  ];
+  for (const pattern of confPatterns) {
+    const m = primaryText.match(pattern);
+    if (m) {
+      // The captured group might be in position 1 or 2 depending on pattern
+      const raw = parseInt(m[2] || m[1], 10);
+      if (!isNaN(raw) && raw >= 1 && raw <= 10) {
+        rawConfidenceScore = raw;
+        break;
+      }
+    }
   }
 
-  // Build narrative from sections 1 (recognition), 2 (description), 3 (reputation), 4 (details)
-  // Strip the numbered headings and join cleanly
+  // ── Clean the text ──
   const cleaned = primaryText
-    .replace(/^\s*\d+[\.\)]\s*(RECOGNITION|DESCRIPTION|REPUTATION|DETAILS|CONFIDENCE|GAPS)[:\s]*/gim, '\n')
+    // Remove any numbered structural labels the model still added despite free-form prompt
+    .replace(/^\s*\d+[\.\)]\s*(recognition|description|reputation|details|confidence|gaps)[:\s]*/gim, '\n')
+    // Normalise excessive whitespace but preserve intentional paragraph breaks
+    .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  // If the model said it doesn't know the brand, the narrative should reflect that clearly
-  const doesNotKnow = /(?:i don.t|no information|not aware|unable to find|cannot find|unfamiliar|no knowledge)/i.test(cleaned);
-  if (doesNotKnow && cleaned.length < 300) {
+  // ── Detect zero-knowledge responses ──
+  const noKnowledgePatterns = [
+    /(?:i don.t|i do not)\s+(?:have|know)/i,
+    /no\s+(?:information|data|knowledge|records)/i,
+    /(?:not\s+aware|unaware|unfamiliar|unable\s+to\s+find)/i,
+    /(?:cannot|could not)\s+(?:find|locate|identify)/i,
+    /(?:outside|beyond)\s+(?:my\s+)?(?:knowledge|training)/i
+  ];
+  const isNoKnowledge = noKnowledgePatterns.some(p => p.test(cleaned));
+  if (isNoKnowledge && cleaned.length < 350) {
     return {
-      narrative: cleaned.length > 20 ? cleaned : 'This AI engine has no knowledge of this brand.',
+      narrative: cleaned.length > 20
+        ? cleaned
+        : 'This AI engine has no knowledge of this brand.',
       rawConfidenceScore: 1
     };
   }
 
-  // Truncate to a reasonable display length — 600 chars is ample for a narrative card
-  const truncated = cleaned.length > 600
-    ? cleaned.slice(0, 597) + '...'
-    : cleaned;
+  // ── Truncate to display length preserving sentence boundaries ──
+  const MAX_DISPLAY_CHARS = 700;
+  let narrative = cleaned;
 
-  return { narrative: truncated, rawConfidenceScore };
+  if (cleaned.length > MAX_DISPLAY_CHARS) {
+    // Try to cut at a sentence boundary near the limit
+    const cutPoint = cleaned.lastIndexOf('. ', MAX_DISPLAY_CHARS);
+    if (cutPoint > MAX_DISPLAY_CHARS * 0.6) {
+      narrative = cleaned.slice(0, cutPoint + 1);
+    } else {
+      narrative = cleaned.slice(0, MAX_DISPLAY_CHARS - 3) + '...';
+    }
+  }
+
+  return { narrative, rawConfidenceScore };
 }
 
 // ─── MAIN EXPORT: queryAllEngines ────────────────────────────────────────────
-
 /**
- * Query all requested AI engines in parallel.
- * Each engine is queried independently — one failure does not block others.
- * Returns a results map keyed by engine name with raw text and parsed data.
+ * Query all requested engines in parallel.
+ * Returns a results map with both raw text and fully parsed signal data.
+ * One engine failing never blocks others.
  *
- * @param {string} domain - normalised domain e.g. "stripe.com"
- * @param {string[]} engines - array from the frontend e.g. ['meta', 'google', 'mistral']
- * @param {{ openai: string|null, anthropic: string|null }} keys - user-supplied keys
+ * @param {string}   domain   - normalised domain e.g. "stripe.com"
+ * @param {string[]} engines  - e.g. ['meta', 'google', 'mistral']
+ * @param {{ openai?: string, anthropic?: string }} keys
  * @returns {Promise<Object.<string, {
- *   primaryText: string,
- *   verificationText: string,
- *   narrative: string,
+ *   primaryText:        string,
+ *   verificationText:   string,
+ *   narrative:          string,
  *   rawConfidenceScore: number,
- *   accurateClaims: number,
- *   conflictingClaims: number,
+ *   accurateClaims:     number,
+ *   conflictingClaims:  number,
  *   unverifiableClaims: number,
- *   topicsKnown: string[],
- *   topicsUnknown: string[],
- *   error: string|null
+ *   topicsKnown:        string[],
+ *   topicsUnknown:      string[],
+ *   sentiment:          string,
+ *   communityPresent:   boolean,
+ *   recommended:        string,
+ *   socialFootprint:    string,
+ *   viralitySignal:     boolean,
+ *   informalScore:      number,
+ *   formalScore:        number,
+ *   error:              string|null
  * }>>}
  */
 async function queryAllEngines(domain, engines, keys = {}) {
-  logger.info(`Querying ${engines.length} engine(s) for domain: ${domain} — [${engines.join(', ')}]`);
+  logger.info(
+    `Querying ${engines.length} engine(s) for: ${domain} — [${engines.join(', ')}]`
+  );
 
-  // Build the list of query promises, one per requested engine
   const queryTasks = engines.map(engine => {
     let promise;
 
@@ -635,11 +707,13 @@ async function queryAllEngines(domain, engines, keys = {}) {
         promise = queryAnthropic(domain, keys.anthropic || '');
         break;
       default:
-        logger.warn(`Unknown engine requested: ${engine} — skipping`);
-        promise = Promise.resolve({ primaryText: '', verificationText: '', error: `Unknown engine: ${engine}` });
+        logger.warn(`Unknown engine: ${engine} — skipping`);
+        promise = Promise.resolve({
+          primaryText: '', verificationText: '',
+          error: `Unknown engine: ${engine}`
+        });
     }
 
-    // Wrap each promise so a rejection never causes Promise.allSettled to fail
     return promise
       .then(result => ({ engine, ...result }))
       .catch(err => {
@@ -648,23 +722,18 @@ async function queryAllEngines(domain, engines, keys = {}) {
       });
   });
 
-  // Run all engine queries in parallel — maximum concurrency, minimum total latency
+  // All engines in parallel — total latency = slowest engine only
   const settled = await Promise.allSettled(queryTasks);
 
-  // Assemble the results map
   const results = {};
 
   for (const item of settled) {
-    // Promise.allSettled wraps each in { status, value } — value always exists due to our catch above
-    const res = item.status === 'fulfilled' ? item.value : {
-      engine: 'unknown',
-      primaryText: '',
-      verificationText: '',
-      error: item.reason?.message || 'Unknown error'
-    };
+    const res = item.status === 'fulfilled'
+      ? item.value
+      : { engine: 'unknown', primaryText: '', verificationText: '',
+          error: item.reason?.message || 'Unknown error' };
 
     const { engine, primaryText, verificationText, error } = res;
-
     if (!engine || engine === 'unknown') continue;
 
     const { narrative, rawConfidenceScore } = extractNarrative(primaryText);
@@ -675,18 +744,33 @@ async function queryAllEngines(domain, engines, keys = {}) {
       verificationText,
       narrative,
       rawConfidenceScore,
+      // Standard claim counts
       accurateClaims:     verification.accurateClaims,
       conflictingClaims:  verification.conflictingClaims,
       unverifiableClaims: verification.unverifiableClaims,
       topicsKnown:        verification.topicsKnown,
       topicsUnknown:      verification.topicsUnknown,
+      // NEW: informal/social signal dimensions
+      sentiment:          verification.sentiment,
+      communityPresent:   verification.communityPresent,
+      recommended:        verification.recommended,
+      socialFootprint:    verification.socialFootprint,
+      viralitySignal:     verification.viralitySignal,
+      informalScore:      verification.informalScore,
+      formalScore:        verification.formalScore,
+      // Raw confidence for scorer
+      rawConfidenceScore: verification.confidence || rawConfidenceScore,
       error: error || null
     };
 
     if (error) {
-      logger.warn(`Engine ${engine} returned an error: ${error}`);
+      logger.warn(`Engine ${engine} error: ${error}`);
     } else {
-      logger.info(`Engine ${engine} fully processed — narrative: ${narrative.length} chars | confidence: ${rawConfidenceScore}/10`);
+      logger.info(
+        `Engine ${engine} processed — chars: ${primaryText.length} | ` +
+        `informal: ${verification.informalScore}/10 | formal: ${verification.formalScore}/10 | ` +
+        `community: ${verification.communityPresent} | sentiment: ${verification.sentiment}`
+      );
     }
   }
 
@@ -695,7 +779,6 @@ async function queryAllEngines(domain, engines, keys = {}) {
 
 module.exports = {
   queryAllEngines,
-  // Exported for unit testing
   buildAwarenessPrompt,
   buildVerificationPrompt,
   parseVerificationBlock,
