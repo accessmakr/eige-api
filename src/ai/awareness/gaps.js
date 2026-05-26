@@ -3,41 +3,33 @@
 const logger = require('../../utils/logger');
 
 // ─── GAP SEVERITY LEVELS ──────────────────────────────────────────────────────
-// Every gap is classified into one of three severity tiers.
-// These match exactly what the frontend renders in the narrative gaps section.
 const SEVERITY = {
-  CRITICAL: 'critical',  // brand is misrepresented or completely absent
-  MODERATE: 'moderate',  // brand is present but a key dimension is missing or wrong
-  MINOR:    'minor'      // a specific signal could be strengthened
+  CRITICAL: 'critical',
+  MODERATE: 'moderate',
+  MINOR:    'minor'
 };
 
 // ─── GAP TYPE DEFINITIONS ─────────────────────────────────────────────────────
-// Each gap type maps to a specific failure mode in how AI systems
-// understand and represent a brand. These are the categories rendered
-// in the frontend gap cards.
 const GAP_TYPES = {
-  ABSENT:              'absent',               // brand not in training data at all
-  RECOGNITION_THIN:    'recognition_thin',     // AI barely recognises the brand
-  COMMUNITY_INVISIBLE: 'community_invisible',  // no social/community signal in AI
-  SENTIMENT_SPLIT:     'sentiment_split',      // engines disagree on brand sentiment
-  DEPTH_LOW:           'depth_low',            // AI awareness exists but is shallow
-  INFORMAL_WEAK:       'informal_weak',        // formal facts only, no cultural/social layer
-  FORMAL_WEAK:         'formal_weak',          // community-known but no factual anchoring
-  RECOMMENDATION_GAP:  'recommendation_gap',   // AI does not recommend despite brand quality
-  VIRAL_INVISIBLE:     'viral_invisible',      // brand has viral moments not reflected in AI
-  CONSISTENCY_LOW:     'consistency_low',      // engines give contradictory pictures
-  ACCURACY_LOW:        'accuracy_low',         // AI information appears unreliable
-  COMPETITIVE_CONTEXT: 'competitive_context',  // AI cannot place brand in competitive landscape
-  AUDIENCE_UNKNOWN:    'audience_unknown',     // AI does not know who uses this brand
-  CATEGORY_CONFUSION:  'category_confusion',   // AI misclassifies the brand's category
-  NARRATIVE_STALE:     'narrative_stale',      // AI knowledge appears outdated
-  SOCIAL_FOOTPRINT_LOW:'social_footprint_low'  // minimal social media signal in AI
+  ABSENT:              'absent',
+  RECOGNITION_THIN:    'recognition_thin',
+  COMMUNITY_INVISIBLE: 'community_invisible',
+  SENTIMENT_SPLIT:     'sentiment_split',
+  DEPTH_LOW:           'depth_low',
+  INFORMAL_WEAK:       'informal_weak',
+  FORMAL_WEAK:         'formal_weak',
+  RECOMMENDATION_GAP:  'recommendation_gap',
+  VIRAL_INVISIBLE:     'viral_invisible',
+  CONSISTENCY_LOW:     'consistency_low',
+  ACCURACY_LOW:        'accuracy_low',
+  COMPETITIVE_CONTEXT: 'competitive_context',
+  AUDIENCE_UNKNOWN:    'audience_unknown',
+  CATEGORY_CONFUSION:  'category_confusion',
+  NARRATIVE_STALE:     'narrative_stale',
+  SOCIAL_FOOTPRINT_LOW:'social_footprint_low'
 };
 
 // ─── BRAND COMMUNICATES TEMPLATES ─────────────────────────────────────────────
-// These describe what a brand SHOULD be communicating about itself.
-// They are used to fill the "brandCommunicates" field in each gap object —
-// the frontend renders this as what the brand says vs what AI produces.
 const BRAND_TEMPLATES = {
   [GAP_TYPES.ABSENT]:
     'The brand exists and has an active web presence, products or services, and real users',
@@ -68,15 +60,12 @@ const BRAND_TEMPLATES = {
   [GAP_TYPES.CATEGORY_CONFUSION]:
     'The brand belongs to a well-defined category or industry vertical',
   [GAP_TYPES.NARRATIVE_STALE]:
-    'The brand has recent, updated information, launches, and milestones publicly documented',
+    'The brand is growing and evolving — recent developments are publicly documented and indexed',
   [GAP_TYPES.SOCIAL_FOOTPRINT_LOW]:
     'The brand has meaningful presence across social platforms, forums, and creator content'
 };
 
 // ─── AI PRODUCES TEMPLATES ────────────────────────────────────────────────────
-// What AI systems are actually producing for each gap type.
-// These fill the "aiProduces" field — the contrast with brandCommunicates
-// is what makes each gap card informative to the user.
 const AI_TEMPLATES = {
   [GAP_TYPES.ABSENT]:
     'No meaningful information — brand not found in AI training data',
@@ -107,22 +96,13 @@ const AI_TEMPLATES = {
   [GAP_TYPES.CATEGORY_CONFUSION]:
     'AI is uncertain or incorrect about what category or industry this brand belongs to',
   [GAP_TYPES.NARRATIVE_STALE]:
-    'AI knowledge appears outdated — references old information or lacks recent developments',
+    'AI knowledge of this brand appears to lag behind its current state — recent developments, products, or milestones are not reflected in AI responses',
   [GAP_TYPES.SOCIAL_FOOTPRINT_LOW]:
     'Weak or absent social media and creator-driven knowledge about this brand'
 };
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-/**
- * Build a gap object in the exact shape the frontend expects.
- *
- * @param {string} gapType    - one of GAP_TYPES values
- * @param {string} severity   - one of SEVERITY values
- * @param {string} [overrideBrandCommunicates] - optional custom brand message
- * @param {string} [overrideAiProduces]        - optional custom AI description
- * @returns {{ severity: string, brandCommunicates: string, aiProduces: string, gapType: string }}
- */
 function buildGap(gapType, severity, overrideBrandCommunicates, overrideAiProduces) {
   return {
     severity,
@@ -132,26 +112,12 @@ function buildGap(gapType, severity, overrideBrandCommunicates, overrideAiProduc
   };
 }
 
-/**
- * Mean of an array of numbers. Returns defaultVal if array is empty.
- *
- * @param {number[]} arr
- * @param {number}   defaultVal
- * @returns {number}
- */
 function mean(arr, defaultVal = 0) {
   const valid = (arr || []).filter(n => typeof n === 'number' && !isNaN(n));
   if (valid.length === 0) return defaultVal;
   return valid.reduce((a, b) => a + b, 0) / valid.length;
 }
 
-/**
- * Get the dominant sentiment across all engines.
- * Returns the most common non-unknown sentiment value.
- *
- * @param {Object} scoredEngines
- * @returns {string}
- */
 function getDominantSentiment(scoredEngines) {
   const counts = {};
   for (const data of Object.values(scoredEngines)) {
@@ -163,42 +129,144 @@ function getDominantSentiment(scoredEngines) {
   return sorted.length > 0 ? sorted[0][0] : 'unknown';
 }
 
+// ─── STALENESS DETECTION ──────────────────────────────────────────────────────
+/**
+ * Determine whether a narrative_stale gap is genuinely warranted.
+ *
+ * DESIGN: Standard LLM responses about any fast-moving company routinely
+ * include hedging phrases like "as of my knowledge cutoff" or "this may
+ * have changed" as responsible disclaimers. These phrases are NOT evidence
+ * of AI awareness staleness — they are evidence of good epistemic hygiene.
+ *
+ * A staleness gap is only genuine when ALL THREE of these conditions are true:
+ *
+ * 1. SCORE GATE — The brand is not already well-known (overallScore < 65)
+ *    AND informal knowledge is thin (avgInformal < 6).
+ *    Mega-brands like Amazon, L'Oréal, Apple never receive staleness gaps
+ *    from routine AI disclaimers. Their AI awareness is not stale — the
+ *    models are correctly hedging on time-sensitive specifics only.
+ *
+ * 2. EXPLICIT TOPIC SIGNAL — The model's topicsUnknown list explicitly
+ *    contains recent/current/news-related topics. This means the model
+ *    actively told us it does not know the brand's recent developments —
+ *    not just that it hedged on a specific data point.
+ *
+ * 3. THRESHOLD — At least 60% of active engines AND at least 2 engines
+ *    show genuine staleness signals. A single engine out of two using
+ *    a standard disclaimer is not a meaningful signal.
+ *
+ * All three conditions must be true simultaneously. Failing any one
+ * condition suppresses the gap entirely.
+ *
+ * @param {Array}  activeEntries  - [engineKey, engineData] pairs, non-failed only
+ * @param {number} overallScore
+ * @param {number} avgInformal
+ * @returns {boolean}
+ */
+function isGenuinelyStale(activeEntries, overallScore, avgInformal) {
+
+  // ── Condition 1: Score gate ──
+  // Well-known brands (high score OR high informal knowledge) never get
+  // staleness gaps from routine LLM disclaimers.
+  // overallScore >= 65 OR avgInformal >= 6 → suppress immediately
+  if (overallScore >= 65 || avgInformal >= 6) {
+    logger.info(
+      `Staleness gate: suppressed — overallScore=${overallScore} avgInformal=${avgInformal.toFixed(1)} ` +
+      `(threshold: score<65 AND informal<6 required)`
+    );
+    return false;
+  }
+
+  // ── Condition 2: Explicit topic signal ──
+  // The model must have explicitly listed recent/current/news topics
+  // in its topicsUnknown structured output — not just used a hedging phrase.
+  const STALE_TOPIC_SIGNALS = [
+    'recent', 'latest', 'current', 'news', 'update', 'updates',
+    'new products', 'new features', 'recent launch', 'latest release',
+    'recent developments', 'recent news', 'current events',
+    'current status', 'recent funding', 'recent acquisition',
+    '2024', '2025', '2026', 'this year', 'last year'
+  ];
+
+  // The model must also use hedging language in its primary text
+  // (confirming it is flagging its own knowledge as potentially outdated)
+  const HEDGING_PHRASES = [
+    'may have changed',
+    'as of my knowledge cutoff',
+    'my knowledge cutoff',
+    'may not be current',
+    'may be outdated',
+    'as of my last update',
+    'as of my training',
+    'my training data',
+    'i don\'t have information after',
+    'i don\'t have recent',
+    'limited recent information',
+    'not up to date'
+  ];
+
+  const enginesWithGenuineStaleness = activeEntries.filter(([, d]) => {
+    const primaryText   = (d.primaryText    || '').toLowerCase();
+    const unknownTopics = (d.topicsUnknown  || []).map(t => t.toLowerCase());
+
+    // Must use a hedging phrase in primary text
+    const hasHedgingPhrase = HEDGING_PHRASES.some(phrase =>
+      primaryText.includes(phrase)
+    );
+
+    if (!hasHedgingPhrase) return false;
+
+    // AND must have explicitly listed a stale-signal topic in topicsUnknown
+    const hasExplicitTopicGap = unknownTopics.some(topic =>
+      STALE_TOPIC_SIGNALS.some(signal => topic.includes(signal))
+    );
+
+    return hasExplicitTopicGap;
+  });
+
+  const genuineCount = enginesWithGenuineStaleness.length;
+
+  if (genuineCount === 0) {
+    logger.info(
+      'Staleness gate: suppressed — no engines have both hedging phrase AND explicit topic gap in topicsUnknown'
+    );
+    return false;
+  }
+
+  // ── Condition 3: Threshold ──
+  // Require at least 60% of active engines AND at least 2 engines
+  // to show genuine staleness. Single engine out of two is not enough.
+  const activeCount = activeEntries.length;
+  const requiredCount = Math.max(2, Math.ceil(activeCount * 0.6));
+
+  if (genuineCount < requiredCount) {
+    logger.info(
+      `Staleness gate: suppressed — ${genuineCount}/${activeCount} engines show genuine staleness ` +
+      `(required: ${requiredCount})`
+    );
+    return false;
+  }
+
+  logger.info(
+    `Staleness gate: CONFIRMED — ${genuineCount}/${activeCount} engines show genuine staleness ` +
+    `| overallScore=${overallScore} avgInformal=${avgInformal.toFixed(1)}`
+  );
+  return true;
+}
+
 // ─── MAIN EXPORT: identifyNarrativeGaps ──────────────────────────────────────
 /**
- * Identify narrative gaps between what the brand communicates and what
- * AI systems actually produce about it.
+ * Identify narrative gaps between what the brand communicates
+ * and what AI systems actually produce about it.
  *
- * Each gap is evidence of a specific failure in AI brand representation.
- * Gaps are ordered by severity — critical first, then moderate, then minor.
- *
- * This function uses ALL dimensions from Files 2 and 3:
- *
- * From scored engines (File 3 output):
- *   score, recognition, depth, accuracy, confidence
- *   informalScore, formalScore, communityPresent, recommended,
- *   socialFootprint, viralitySignal, sentiment, topicsKnown, topicsUnknown
- *
- * From consistency analysis (File 4 output):
- *   score, conflicted[], dimensionScores.sentimentAlignment,
- *   dimensionScores.informalAlignment
- *
- * From overall scoring:
- *   overallScore
- *
- * Design principle: informal and social knowledge gaps are treated as
- * first-class gaps — not secondary considerations. A brand that is
- * well-known in communities but invisible in AI community knowledge
- * is a critical gap regardless of how many formal facts AI knows.
- *
- * @param {Object} scoredEngines      - from scoreAllEngines().scoredEngines
- * @param {Object} consistencyResult  - from analyseConsistency()
- * @param {number} overallScore       - 0–100
+ * @param {Object} scoredEngines
+ * @param {Object} consistencyResult
+ * @param {number} overallScore
  * @returns {Array<{severity, brandCommunicates, aiProduces, gapType}>}
  */
 function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
   const gaps = [];
 
-  // Filter to active (non-failed) engines for analysis
   const activeEntries = Object.entries(scoredEngines).filter(([, e]) => !e.failed);
   const activeCount   = activeEntries.length;
 
@@ -207,35 +275,34 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     return [buildGap(GAP_TYPES.ABSENT, SEVERITY.CRITICAL)];
   }
 
-  // ── Aggregate dimension scores across all active engines ──
+  // ── Aggregate dimension scores ──
   const avgRecognition  = mean(activeEntries.map(([, d]) => d.recognition));
   const avgDepth        = mean(activeEntries.map(([, d]) => d.depth));
   const avgAccuracy     = mean(activeEntries.map(([, d]) => d.accuracy));
-  const avgConfidence   = mean(activeEntries.map(([, d]) => d.confidence));
   const avgInformal     = mean(activeEntries.map(([, d]) => d.informalScore || 5));
   const avgFormal       = mean(activeEntries.map(([, d]) => d.formalScore   || 5));
 
-  // ── Community and social signals ──
+  // ── Social and community signals ──
   const communityPresentCount = activeEntries.filter(([, d]) => d.communityPresent).length;
   const viralCount            = activeEntries.filter(([, d]) => d.viralitySignal).length;
   const recommendedCount      = activeEntries.filter(([, d]) => d.recommended === 'yes').length;
   const communityRatio        = communityPresentCount / activeCount;
-  const viralRatio            = viralCount / activeCount;
-  const recommendedRatio      = recommendedCount / activeCount;
+  const viralRatio            = viralCount            / activeCount;
+  const recommendedRatio      = recommendedCount      / activeCount;
 
-  // ── Social footprint distribution ──
-  const footprints = activeEntries.map(([, d]) => d.socialFootprint || 'unknown');
-  const strongFootprintCount  = footprints.filter(f => f === 'strong').length;
-  const weakOrNoneFootprint   = footprints.filter(f => f === 'weak' || f === 'none').length;
+  const footprints           = activeEntries.map(([, d]) => d.socialFootprint || 'unknown');
+  const weakOrNoneFootprint  = footprints.filter(f => f === 'weak' || f === 'none').length;
+
+  // ── Sentiment ──
+  const sentiments          = activeEntries.map(([, d]) => d.sentiment || 'unknown');
+  const hasNegativeSentiment= sentiments.some(s => s === 'negative');
+  const hasPositiveSentiment= sentiments.some(s => s === 'positive');
 
   // ── Consistency signals ──
-  const consistencyScore      = consistencyResult?.score ?? 100;
-  const sentimentAlignScore   = consistencyResult?.dimensionScores?.sentimentAlignment ?? 100;
-  const informalAlignScore    = consistencyResult?.dimensionScores?.informalAlignment  ?? 100;
-  const conflictedCount       = (consistencyResult?.conflicted || []).length;
-
-  // ── Dominant sentiment ──
-  const dominantSentiment = getDominantSentiment(scoredEngines);
+  const consistencyScore    = consistencyResult?.score ?? 100;
+  const sentimentAlignScore = consistencyResult?.dimensionScores?.sentimentAlignment ?? 100;
+  const informalAlignScore  = consistencyResult?.dimensionScores?.informalAlignment  ?? 100;
+  const conflictedCount     = (consistencyResult?.conflicted || []).length;
 
   logger.info(
     `Gap analysis — overall: ${overallScore} | ` +
@@ -245,11 +312,11 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     `consistency: ${consistencyScore}`
   );
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CRITICAL GAPS — brand is absent, misrepresented, or severely under-known
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════
+  // CRITICAL GAPS
+  // ═══════════════════════════════════════════════════════════════════════
 
-  // ── GAP: Brand completely absent from AI training data ──
+  // ── Brand completely absent ──
   if (overallScore < 15 || avgRecognition < 12) {
     gaps.push(buildGap(
       GAP_TYPES.ABSENT,
@@ -259,7 +326,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Recognition so thin it is functionally absent ──
+  // ── Recognition critically thin ──
   else if (avgRecognition < 28 && overallScore < 35) {
     gaps.push(buildGap(
       GAP_TYPES.RECOGNITION_THIN,
@@ -269,7 +336,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Completely invisible in community/social layer of AI knowledge ──
+  // ── Community completely invisible ──
   if (communityRatio === 0 && avgInformal < 3) {
     gaps.push(buildGap(
       GAP_TYPES.COMMUNITY_INVISIBLE,
@@ -279,7 +346,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Severe accuracy problems ──
+  // ── Severe accuracy problems ──
   if (avgAccuracy < 25 && overallScore > 10) {
     gaps.push(buildGap(
       GAP_TYPES.ACCURACY_LOW,
@@ -289,7 +356,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Severe consistency failure ──
+  // ── Severe consistency failure ──
   if (consistencyScore < 30 && activeCount >= 2) {
     gaps.push(buildGap(
       GAP_TYPES.CONSISTENCY_LOW,
@@ -299,12 +366,11 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MODERATE GAPS — brand is present but important dimensions are weak
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════
+  // MODERATE GAPS
+  // ═══════════════════════════════════════════════════════════════════════
 
-  // ── GAP: Informal knowledge weak (community/social layer missing) ──
-  // This is a moderate gap when community ratio is low but not zero
+  // ── Informal knowledge weak ──
   if (avgInformal < 5 && communityRatio < 0.5 && overallScore >= 15) {
     gaps.push(buildGap(
       GAP_TYPES.INFORMAL_WEAK,
@@ -314,8 +380,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Formal knowledge weak (no factual anchoring) ──
-  // Community-known brands with no formal facts are vulnerable to drift
+  // ── Formal knowledge weak ──
   if (avgFormal < 3.5 && avgInformal >= 5 && overallScore >= 25) {
     gaps.push(buildGap(
       GAP_TYPES.FORMAL_WEAK,
@@ -325,7 +390,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Low depth overall ──
+  // ── Low depth ──
   if (avgDepth < 35 && overallScore >= 20) {
     gaps.push(buildGap(
       GAP_TYPES.DEPTH_LOW,
@@ -335,7 +400,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: AI does not recommend the brand ──
+  // ── Not recommended ──
   if (recommendedRatio === 0 && overallScore >= 25) {
     gaps.push(buildGap(
       GAP_TYPES.RECOMMENDATION_GAP,
@@ -352,7 +417,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Sentiment split across engines ──
+  // ── Sentiment split ──
   if (sentimentAlignScore < 50 && activeCount >= 2 && conflictedCount > 0) {
     gaps.push(buildGap(
       GAP_TYPES.SENTIMENT_SPLIT,
@@ -362,7 +427,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Social footprint weak ──
+  // ── Social footprint weak ──
   if (weakOrNoneFootprint >= Math.ceil(activeCount * 0.6) && overallScore >= 20) {
     gaps.push(buildGap(
       GAP_TYPES.SOCIAL_FOOTPRINT_LOW,
@@ -372,8 +437,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: AI does not know the brand's audience ──
-  // Detected by checking topicsUnknown across engines for audience-related terms
+  // ── Audience unknown ──
   const audienceUnknownEngines = activeEntries.filter(([, d]) => {
     const unknownTopics = (d.topicsUnknown || []).map(t => t.toLowerCase());
     return unknownTopics.some(t =>
@@ -391,7 +455,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Consistency moderately low ──
+  // ── Consistency moderately low ──
   if (consistencyScore >= 30 && consistencyScore < 55 && activeCount >= 2) {
     gaps.push(buildGap(
       GAP_TYPES.CONSISTENCY_LOW,
@@ -401,7 +465,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Accuracy moderately low ──
+  // ── Accuracy moderately low ──
   if (avgAccuracy >= 25 && avgAccuracy < 45 && overallScore >= 20) {
     gaps.push(buildGap(
       GAP_TYPES.ACCURACY_LOW,
@@ -411,11 +475,11 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MINOR GAPS — specific signals that could be strengthened
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════
+  // MINOR GAPS
+  // ═══════════════════════════════════════════════════════════════════════
 
-  // ── GAP: Viral moments not reflected in AI ──
+  // ── Viral moments not reflected ──
   if (viralRatio === 0 && overallScore >= 35) {
     gaps.push(buildGap(
       GAP_TYPES.VIRAL_INVISIBLE,
@@ -425,10 +489,10 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Competitive context missing ──
+  // ── Competitive context missing ──
   const competitiveUnknownEngines = activeEntries.filter(([, d]) => {
     const unknownTopics = (d.topicsUnknown || []).map(t => t.toLowerCase());
-    const primaryText   = (d.primaryText || '').toLowerCase();
+    const primaryText   = (d.primaryText   || '').toLowerCase();
     const hasCompetitorMention = /competitor|alternative|versus|vs\.|competes with/i.test(primaryText);
     const mentionsUnknown = unknownTopics.some(t =>
       t.includes('competitor') || t.includes('alternative') ||
@@ -446,7 +510,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Informal alignment low (engines disagree on social signal) ──
+  // ── Informal alignment low ──
   if (informalAlignScore < 45 && activeCount >= 2) {
     gaps.push(buildGap(
       GAP_TYPES.INFORMAL_WEAK,
@@ -456,7 +520,7 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Formal knowledge very thin despite community awareness ──
+  // ── Formal knowledge very thin despite community awareness ──
   if (avgFormal < 2.5 && avgInformal >= 6 && overallScore >= 40) {
     gaps.push(buildGap(
       GAP_TYPES.FORMAL_WEAK,
@@ -466,38 +530,40 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ── GAP: Narrative appears stale ──
-  // Detected by checking if topicsUnknown mentions recent/current/news terms
-  const staleEngines = activeEntries.filter(([, d]) => {
-    const unknownTopics  = (d.topicsUnknown || []).map(t => t.toLowerCase());
-    const primaryText    = (d.primaryText || '').toLowerCase();
-    const stalenessSignals = [
-      'recent', 'latest', 'current', 'new', 'update', 'news', '2024', '2025',
-      'recent developments', 'recent news', 'latest updates'
-    ];
-    const mentionsStale = stalenessSignals.some(s =>
-      unknownTopics.some(t => t.includes(s)) || primaryText.includes('may have changed') ||
-      primaryText.includes('as of my') || primaryText.includes('my knowledge cutoff') ||
-      primaryText.includes('may not be current') || primaryText.includes('may be outdated')
-    );
-    return mentionsStale;
-  });
+  // ── NARRATIVE STALE ─────────────────────────────────────────────────────
+  // Uses the isGenuinelyStale() gate which enforces all three conditions:
+  // score gate + explicit topic signal + threshold.
+  // Standard LLM hedging disclaimers on high-scoring brands never trigger this.
+  // ────────────────────────────────────────────────────────────────────────
+  if (isGenuinelyStale(activeEntries, overallScore, avgInformal)) {
+    const staleCount = activeEntries.filter(([, d]) => {
+      const primaryText   = (d.primaryText   || '').toLowerCase();
+      const unknownTopics = (d.topicsUnknown || []).map(t => t.toLowerCase());
+      const HEDGING_PHRASES = [
+        'may have changed', 'as of my knowledge cutoff', 'my knowledge cutoff',
+        'may not be current', 'may be outdated', 'as of my last update',
+        'as of my training', 'my training data', 'limited recent information'
+      ];
+      const STALE_TOPIC_SIGNALS = [
+        'recent', 'latest', 'current', 'news', 'update', 'updates',
+        '2024', '2025', '2026', 'this year', 'last year'
+      ];
+      return HEDGING_PHRASES.some(p => primaryText.includes(p)) &&
+             unknownTopics.some(t => STALE_TOPIC_SIGNALS.some(s => t.includes(s)));
+    }).length;
 
-  if (staleEngines.length >= Math.ceil(activeCount * 0.5)) {
     gaps.push(buildGap(
       GAP_TYPES.NARRATIVE_STALE,
       SEVERITY.MINOR,
       'The brand regularly publishes news, updates, and developments that are publicly documented',
-      `${staleEngines.length} of ${activeCount} AI engines indicate their knowledge of this brand may be outdated or stale`
+      `${staleCount} of ${activeCount} AI engines indicate their knowledge of this brand may lag behind its current state`
     ));
   }
 
-  // ── GAP: Category confusion ──
-  // If topicsUnknown across multiple engines includes category/industry terms,
-  // or if primary text shows uncertainty about what the brand does
+  // ── Category confusion ──
   const categoryUnclearEngines = activeEntries.filter(([, d]) => {
     const unknownTopics = (d.topicsUnknown || []).map(t => t.toLowerCase());
-    const primaryText   = (d.primaryText || '').toLowerCase();
+    const primaryText   = (d.primaryText   || '').toLowerCase();
     return unknownTopics.some(t =>
       t.includes('category') || t.includes('industry') ||
       t.includes('what it does') || t.includes('sector')
@@ -516,16 +582,11 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     ));
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // SORT: critical first, then moderate, then minor
-  // Deduplicate by gapType to prevent the same gap appearing twice
-  // (e.g. RECOMMENDATION_GAP appearing once from ratio=0 and again from ratio<0.4)
-  // ─────────────────────────────────────────────────────────────────────────
-  const severityOrder  = { critical: 0, moderate: 1, minor: 2 };
-  const seenGapTypes   = new Set();
-  const uniqueGaps     = [];
+  // ─── SORT, DEDUPLICATE, CAP ───────────────────────────────────────────
+  const severityOrder = { critical: 0, moderate: 1, minor: 2 };
+  const seenGapTypes  = new Set();
+  const uniqueGaps    = [];
 
-  // First pass: add all unique gap types, sorted by severity
   const sorted = [...gaps].sort(
     (a, b) => severityOrder[a.severity] - severityOrder[b.severity]
   );
@@ -537,7 +598,6 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
     }
   }
 
-  // Cap at 8 gaps for display — too many gaps overwhelms the frontend
   const finalGaps = uniqueGaps.slice(0, 8);
 
   logger.info(
@@ -552,9 +612,9 @@ function identifyNarrativeGaps(scoredEngines, consistencyResult, overallScore) {
 
 module.exports = {
   identifyNarrativeGaps,
-  // Exported for unit testing
   buildGap,
   getDominantSentiment,
+  isGenuinelyStale,
   SEVERITY,
   GAP_TYPES
 };
