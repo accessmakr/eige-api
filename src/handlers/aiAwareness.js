@@ -4,8 +4,8 @@ const logger                 = require('../utils/logger');
 const { queryAllEngines }    = require('../ai/awareness/queryEngine');
 const { scoreAllEngines }    = require('../ai/awareness/scorer');
 const { analyseConsistency } = require('../ai/awareness/consistency');
-const { identifyNarrativeGaps }      = require('../ai/awareness/gaps');
-const { generateRecommendations }    = require('../ai/awareness/recommendations');
+const { identifyNarrativeGaps }   = require('../ai/awareness/gaps');
+const { generateRecommendations } = require('../ai/awareness/recommendations');
 const {
   getCachedAwarenessScan,
   insertAwarenessScan
@@ -13,49 +13,185 @@ const {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-// Valid engine keys the frontend can request.
-// Any engine not in this list is silently dropped before querying.
-const VALID_ENGINES = ['meta', 'google', 'mistral', 'chatgpt', 'claude'];
+const VALID_ENGINES = ['meta', 'google', 'mistral', 'chatgpt', 'claude', 'gemma'];
+const MIN_ENGINES   = 1;
+const MAX_ENGINES   = 6;
 
-// Minimum engines required to run a scan.
-const MIN_ENGINES = 1;
+// ─── ENGINE DISPLAY NAMES ─────────────────────────────────────────────────────
+const ENGINE_DISPLAY_NAMES = {
+  meta:    'Meta AI',
+  google:  'Google AI',
+  mistral: 'Mistral',
+  chatgpt: 'ChatGPT',
+  claude:  'Claude',
+  gemma:   'Gemma'
+};
 
-// Maximum engines per request — prevents abuse on the free tier.
-const MAX_ENGINES = 5;
+// ─── FRONTEND KEY MAP ─────────────────────────────────────────────────────────
+// Maps internal engine keys to the keys the frontend renderResults() expects.
+const FRONTEND_KEY_MAP = {
+  meta:    'metaAI',
+  google:  'googleAI',
+  mistral: 'mistral',
+  chatgpt: 'chatgpt',
+  claude:  'claude',
+  gemma:   'gemma'
+};
+
+// ─── ERROR SANITISER ──────────────────────────────────────────────────────────
+/**
+ * Sanitise a raw API error message into a clean, user-facing string.
+ *
+ * FIX FOR A1 + B1:
+ * Raw API error strings from Google, Groq, OpenAI, and Anthropic contain
+ * internal metric names, quota URLs, retry timers, and technical strings
+ * that must never be shown to end users. This function detects the error
+ * type and returns a clean, actionable message instead.
+ *
+ * Called on every engine result before the response leaves the handler.
+ * Applied to both the error field and the narrative field when the
+ * narrative contains a raw error string.
+ *
+ * @param {string} rawError - the raw error string from the API
+ * @param {string} engineLabel - human-readable engine name for context
+ * @returns {string} clean user-facing error message
+ */
+function sanitiseErrorMessage(rawError, engineLabel) {
+  if (!rawError || typeof rawError !== 'string') {
+    return `${engineLabel} is temporarily unavailable`;
+  }
+
+  const err = rawError.toLowerCase();
+
+  // ── Google / Gemini quota errors ──
+  if (
+    err.includes('quota exceeded') ||
+    err.includes('free_tier') ||
+    err.includes('generativelanguage.googleapis.com') ||
+    err.includes('rate-limits') ||
+    err.includes('generate_content') ||
+    err.includes('billing') ||
+    err.includes('plan and billing')
+  ) {
+    return `${engineLabel} is temporarily unavailable — usage limit reached. Results from other engines are unaffected.`;
+  }
+
+  // ── Groq rate limit / quota ──
+  if (
+    err.includes('rate_limit_exceeded') ||
+    err.includes('rate limit') ||
+    err.includes('too many requests') ||
+    err.includes('x-ratelimit')
+  ) {
+    return `${engineLabel} is temporarily rate-limited. Results from other engines are unaffected.`;
+  }
+
+  // ── Authentication errors ──
+  if (
+    err.includes('invalid api key') ||
+    err.includes('invalid_api_key') ||
+    err.includes('unauthorized') ||
+    err.includes('401') ||
+    err.includes('authentication') ||
+    err.includes('api key') ||
+    err.includes('expired')
+  ) {
+    return `${engineLabel} API key is invalid or expired. Please check your key in Settings.`;
+  }
+
+  // ── Model not found / deprecated ──
+  if (
+    err.includes('model not found') ||
+    err.includes('model_not_found') ||
+    err.includes('no such model') ||
+    err.includes('deprecated') ||
+    err.includes('decommissioned') ||
+    err.includes('does not exist')
+  ) {
+    return `${engineLabel} model is currently unavailable. The system will automatically retry with an alternative model.`;
+  }
+
+  // ── Timeout ──
+  if (
+    err.includes('timeout') ||
+    err.includes('timed out') ||
+    err.includes('aborted') ||
+    err.includes('abort')
+  ) {
+    return `${engineLabel} took too long to respond. Results from other engines are unaffected.`;
+  }
+
+  // ── Network / connection errors ──
+  if (
+    err.includes('fetch') ||
+    err.includes('network') ||
+    err.includes('econnrefused') ||
+    err.includes('enotfound') ||
+    err.includes('socket') ||
+    err.includes('connect')
+  ) {
+    return `${engineLabel} could not be reached due to a network issue. Results from other engines are unaffected.`;
+  }
+
+  // ── OpenAI-specific ──
+  if (
+    err.includes('insufficient_quota') ||
+    err.includes('billing_hard_limit') ||
+    err.includes('openai')
+  ) {
+    return `${engineLabel} quota exceeded on your API key. Check your OpenAI billing dashboard.`;
+  }
+
+  // ── Anthropic-specific ──
+  if (
+    err.includes('anthropic') ||
+    err.includes('overloaded') ||
+    err.includes('529')
+  ) {
+    return `${engineLabel} is currently overloaded. Results from other engines are unaffected.`;
+  }
+
+  // ── Generic fallback — never expose raw error ──
+  // Log the raw error server-side for debugging but return clean message
+  logger.warn(`[sanitiseError] Unclassified error for ${engineLabel}: ${rawError.slice(0, 200)}`);
+  return `${engineLabel} is temporarily unavailable. Results from other engines are unaffected.`;
+}
+
+/**
+ * Check whether a narrative string contains a raw API error message.
+ * Used to detect when an error slipped through into the narrative field.
+ *
+ * @param {string} narrative
+ * @returns {boolean}
+ */
+function narrativeContainsRawError(narrative) {
+  if (!narrative) return false;
+  const n = narrative.toLowerCase();
+  return (
+    n.includes('generativelanguage.googleapis.com') ||
+    n.includes('quota exceeded for metric') ||
+    n.includes('generate_content_free_tier') ||
+    n.includes('please retry in') ||
+    n.includes('x-ratelimit') ||
+    n.includes('insufficient_quota') ||
+    n.includes('billing_hard_limit') ||
+    n.includes('https://ai.google.dev') ||
+    n.includes('https://ai.dev/rate-limit')
+  );
+}
 
 // ─── DOMAIN NORMALISER ────────────────────────────────────────────────────────
-/**
- * Extract and normalise a domain string from any URL or domain input.
- * Strips protocol, www, trailing slashes, and query strings.
- * Lowercases the result.
- *
- * Examples:
- *   https://www.stripe.com/payments → stripe.com
- *   HTTP://Notion.so               → notion.so
- *   aicitationscan.com/            → aicitationscan.com
- *
- * @param {string} rawUrl
- * @returns {string} normalised domain e.g. "stripe.com"
- */
+
 function normaliseDomain(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
 
   let url = rawUrl.trim();
-
-  // Add protocol if missing so URL parsing works correctly
-  if (!/^https?:\/\//i.test(url)) {
-    url = 'https://' + url;
-  }
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
 
   try {
     const parsed = new URL(url);
-    // Remove www. prefix — we want the root domain only
-    return parsed.hostname
-      .replace(/^www\./i, '')
-      .toLowerCase()
-      .trim();
+    return parsed.hostname.replace(/^www\./i, '').toLowerCase().trim();
   } catch {
-    // URL parsing failed — fall back to manual stripping
     return rawUrl
       .replace(/^https?:\/\//i, '')
       .replace(/^www\./i, '')
@@ -65,110 +201,18 @@ function normaliseDomain(rawUrl) {
   }
 }
 
-// ─── ENGINE MAP ───────────────────────────────────────────────────────────────
-/**
- * Map engine keys to their display names.
- * Used in the response to give the frontend human-readable engine labels.
- */
-const ENGINE_DISPLAY_NAMES = {
-  meta:    'Meta AI',
-  google:  'Google AI',
-  mistral: 'Mistral',
-  chatgpt: 'ChatGPT',
-  claude:  'Claude'
-};
-
-// ─── RESPONSE SHAPE BUILDER ───────────────────────────────────────────────────
-/**
- * Build the per-engine response object in the exact shape the frontend
- * renderResults() function expects.
- *
- * Frontend expects for each engine key (metaAI, googleAI, mistral, chatgpt, claude):
- * {
- *   score:              number,
- *   narrative:          string,
- *   recognition:        number,
- *   depth:              number,
- *   accuracy:           number,
- *   confidence:         number,
- *   accurateClaims:     number,
- *   conflictingClaims:  number,
- *   unverifiableClaims: number,
- *   topicsKnown:        string[],
- *   topicsUnknown:      string[],
- *   // Extended informal/social signals — used by enhanced frontend display
- *   sentiment:          string,
- *   communityPresent:   boolean,
- *   recommended:        string,
- *   socialFootprint:    string,
- *   viralitySignal:     boolean,
- *   informalScore:      number,
- *   formalScore:        number,
- *   failed:             boolean,
- *   error:              string|null
- * }
- *
- * The frontend uses engine keys: metaAI, googleAI, mistral, chatgpt, claude.
- * Our internal engine keys are: meta, google, mistral, chatgpt, claude.
- * This function handles the meta→metaAI and google→googleAI remapping.
- *
- * @param {string} engineKey      - internal key e.g. 'meta'
- * @param {object} scoredData     - from scoreAllEngines().scoredEngines[engineKey]
- * @returns {{ frontendKey: string, payload: object }}
- */
-function buildEngineResponsePayload(engineKey, scoredData) {
-  // Map internal key to frontend key
-  const frontendKeyMap = {
-    meta:    'metaAI',
-    google:  'googleAI',
-    mistral: 'mistral',
-    chatgpt: 'chatgpt',
-    claude:  'claude'
-  };
-
-  const frontendKey = frontendKeyMap[engineKey] || engineKey;
-
-  const payload = {
-    score:              scoredData.score              ?? 0,
-    narrative:          scoredData.narrative          || 'No response available for this engine.',
-    recognition:        scoredData.recognition        ?? 0,
-    depth:              scoredData.depth              ?? 0,
-    accuracy:           scoredData.accuracy           ?? 0,
-    confidence:         scoredData.confidence         ?? 0,
-    accurateClaims:     scoredData.accurateClaims     ?? 0,
-    conflictingClaims:  scoredData.conflictingClaims  ?? 0,
-    unverifiableClaims: scoredData.unverifiableClaims ?? 0,
-    topicsKnown:        scoredData.topicsKnown        || [],
-    topicsUnknown:      scoredData.topicsUnknown      || [],
-    // Informal/social signals — new dimensions from Files 2–3
-    sentiment:          scoredData.sentiment          || 'unknown',
-    communityPresent:   scoredData.communityPresent   ?? false,
-    recommended:        scoredData.recommended        || 'unclear',
-    socialFootprint:    scoredData.socialFootprint    || 'unknown',
-    viralitySignal:     scoredData.viralitySignal     ?? false,
-    informalScore:      scoredData.informalScore      ?? 0,
-    formalScore:        scoredData.formalScore        ?? 0,
-    failed:             scoredData.failed             ?? false,
-    error:              scoredData.error              || null
-  };
-
-  return { frontendKey, payload };
-}
-
 // ─── REQUEST VALIDATOR ────────────────────────────────────────────────────────
 /**
- * Validate the incoming request body for the /api/ai-awareness route.
- * Returns { valid: true, ... } on success or { valid: false, error: string }.
+ * Validate and sanitise the incoming request body.
  *
- * Expected body shape:
- * {
- *   url:     string,                          // required
- *   engines: string[],                        // required, 1–5 items
- *   keys:    { openai?: string, anthropic?: string }  // optional
- * }
+ * FIX FOR A8 + A9:
+ * Now extracts keys.gemini and keys.groq from the payload in addition
+ * to keys.openai and keys.anthropic. All four user-supplied keys are
+ * sanitised and passed through to queryAllEngines().
  *
- * @param {object} body - req.body
- * @returns {{ valid: boolean, error?: string, domain?: string, engines?: string[], keys?: object }}
+ * @param {object} body
+ * @returns {{ valid: boolean, error?: string, domain?: string,
+ *             engines?: string[], keys?: object }}
  */
 function validateRequest(body) {
   const { url, engines, keys } = body || {};
@@ -188,13 +232,11 @@ function validateRequest(body) {
     return { valid: false, error: 'engines must be a non-empty array' };
   }
 
-  // Filter to valid engines only — silently drop invalid ones
   const validRequested = engines
     .filter(e => typeof e === 'string')
     .map(e => e.toLowerCase().trim())
     .filter(e => VALID_ENGINES.includes(e));
 
-  // Remove duplicates
   const uniqueEngines = [...new Set(validRequested)];
 
   if (uniqueEngines.length < MIN_ENGINES) {
@@ -205,28 +247,31 @@ function validateRequest(body) {
   }
 
   if (uniqueEngines.length > MAX_ENGINES) {
-    return {
-      valid: false,
-      error: `Maximum ${MAX_ENGINES} engines per request`
-    };
+    return { valid: false, error: `Maximum ${MAX_ENGINES} engines per request` };
   }
 
-  // ── keys ──
-  // Keys are optional — only required if chatgpt or claude are in engines
+  // ── keys — ALL FOUR USER-SUPPLIED KEY TYPES ──
+  // A8 fix: extract keys.gemini
+  // A9 fix: extract keys.groq
   const sanitisedKeys = {
-    openai:    (keys?.openai    && typeof keys.openai    === 'string') ? keys.openai.trim()    : null,
-    anthropic: (keys?.anthropic && typeof keys.anthropic === 'string') ? keys.anthropic.trim() : null
+    openai:    (keys?.openai    && typeof keys.openai    === 'string' && keys.openai.trim().length > 10)
+                 ? keys.openai.trim()    : null,
+    anthropic: (keys?.anthropic && typeof keys.anthropic === 'string' && keys.anthropic.trim().length > 10)
+                 ? keys.anthropic.trim() : null,
+    gemini:    (keys?.gemini    && typeof keys.gemini    === 'string' && keys.gemini.trim().length > 10)
+                 ? keys.gemini.trim()    : null,
+    groq:      (keys?.groq      && typeof keys.groq      === 'string' && keys.groq.trim().length > 10)
+                 ? keys.groq.trim()      : null
   };
 
-  // If chatgpt requested but no openai key — remove chatgpt from engines
-  // rather than failing the entire request. Log a warning.
+  // ── Drop paid/key-required engines if no key provided ──
   const finalEngines = uniqueEngines.filter(engine => {
     if (engine === 'chatgpt' && !sanitisedKeys.openai) {
-      logger.warn('ChatGPT engine requested but no OpenAI key provided — skipping ChatGPT');
+      logger.warn('ChatGPT engine requested but no OpenAI key provided — skipping');
       return false;
     }
     if (engine === 'claude' && !sanitisedKeys.anthropic) {
-      logger.warn('Claude engine requested but no Anthropic key provided — skipping Claude');
+      logger.warn('Claude engine requested but no Anthropic key provided — skipping');
       return false;
     }
     return true;
@@ -239,34 +284,85 @@ function validateRequest(body) {
     };
   }
 
-  return {
-    valid: true,
-    domain,
-    engines: finalEngines,
-    keys: sanitisedKeys
+  return { valid: true, domain, engines: finalEngines, keys: sanitisedKeys };
+}
+
+// ─── ENGINE RESPONSE PAYLOAD BUILDER ─────────────────────────────────────────
+/**
+ * Build the per-engine response object in the exact shape
+ * the frontend renderResults() function expects.
+ *
+ * Applies sanitiseErrorMessage() to both the error field and
+ * the narrative field — ensuring raw API errors never reach
+ * the frontend regardless of where they originated in the pipeline.
+ *
+ * @param {string} engineKey
+ * @param {object} scoredData
+ * @returns {{ frontendKey: string, payload: object }}
+ */
+function buildEngineResponsePayload(engineKey, scoredData) {
+  const frontendKey  = FRONTEND_KEY_MAP[engineKey] || engineKey;
+  const displayName  = ENGINE_DISPLAY_NAMES[engineKey] || engineKey;
+
+  // ── Sanitise error field ──
+  const cleanError = scoredData.error
+    ? sanitiseErrorMessage(scoredData.error, displayName)
+    : null;
+
+  // ── Sanitise narrative field ──
+  // If the narrative somehow contains a raw API error string,
+  // replace it with the clean sanitised message
+  let cleanNarrative = scoredData.narrative || 'No response available for this engine.';
+  if (narrativeContainsRawError(cleanNarrative)) {
+    cleanNarrative = cleanError ||
+      `${displayName} is temporarily unavailable. Results from other engines are unaffected.`;
+    logger.warn(
+      `[buildPayload] Raw error detected in narrative field for ${engineKey} — sanitised`
+    );
+  }
+
+  const payload = {
+    score:              scoredData.score              ?? 0,
+    narrative:          cleanNarrative,
+    recognition:        scoredData.recognition        ?? 0,
+    depth:              scoredData.depth              ?? 0,
+    accuracy:           scoredData.accuracy           ?? 0,
+    confidence:         scoredData.confidence         ?? 0,
+    accurateClaims:     scoredData.accurateClaims     ?? 0,
+    conflictingClaims:  scoredData.conflictingClaims  ?? 0,
+    unverifiableClaims: scoredData.unverifiableClaims ?? 0,
+    topicsKnown:        scoredData.topicsKnown        || [],
+    topicsUnknown:      scoredData.topicsUnknown      || [],
+    sentiment:          scoredData.sentiment          || 'unknown',
+    communityPresent:   scoredData.communityPresent   ?? false,
+    recommended:        scoredData.recommended        || 'unclear',
+    socialFootprint:    scoredData.socialFootprint    || 'unknown',
+    viralitySignal:     scoredData.viralitySignal     ?? false,
+    informalScore:      scoredData.informalScore      ?? 0,
+    formalScore:        scoredData.formalScore        ?? 0,
+    failed:             scoredData.failed             ?? false,
+    error:              cleanError
   };
+
+  return { frontendKey, payload };
 }
 
 // ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
 /**
  * Handle POST /api/ai-awareness
  *
- * Full pipeline:
- *   1. Validate request
- *   2. Normalise domain
- *   3. Check awareness scan cache (1-hour TTL)
- *   4. Query all requested AI engines in parallel
- *   5. Score all engine results across all dimensions
- *   6. Analyse cross-engine consistency
- *   7. Identify narrative gaps
- *   8. Generate prioritised recommendations
- *   9. Assemble complete response in frontend-expected shape
- *  10. Persist result to Supabase awareness_scans table
- *  11. Return response
- *
- * On any unhandled error the handler returns a 500 with a structured
- * error response rather than crashing — the frontend showApiError()
- * function handles this gracefully.
+ * Pipeline:
+ *  1. Validate request
+ *  2. Normalise domain
+ *  3. Check cache
+ *  4. Query all engines in parallel
+ *  5. Score all results
+ *  6. Analyse consistency
+ *  7. Identify narrative gaps
+ *  8. Generate recommendations
+ *  9. Assemble response — with full error sanitisation
+ * 10. Persist to Supabase (fire and forget)
+ * 11. Return response
  *
  * @param {import('express').Request}  req
  * @param {import('express').Response} res
@@ -274,62 +370,48 @@ function validateRequest(body) {
 async function aiAwarenessHandler(req, res) {
   const requestStart = Date.now();
 
-  logger.info(`[aiAwareness] Incoming request from ${req.ip || 'unknown'}`);
+  logger.info(`[aiAwareness] Request from ${req.ip || 'unknown'}`);
 
   // ── Step 1: Validate ──
   const validation = validateRequest(req.body);
 
   if (!validation.valid) {
     logger.warn(`[aiAwareness] Validation failed: ${validation.error}`);
-    return res.status(400).json({
-      error:   validation.error,
-      success: false
-    });
+    return res.status(400).json({ error: validation.error, success: false });
   }
 
   const { domain, engines, keys } = validation;
 
   logger.info(
-    `[aiAwareness] Scan start — domain: ${domain} | ` +
-    `engines: [${engines.join(', ')}]`
+    `[aiAwareness] Scan start — domain: ${domain} | engines: [${engines.join(', ')}]`
   );
 
   try {
 
     // ── Step 2: Check cache ──
-    // If a fresh result exists for this domain (within 1 hour), return it
-    // immediately without querying any AI engines.
     const cached = await getCachedAwarenessScan(domain);
 
     if (cached) {
-      logger.info(`[aiAwareness] Cache HIT for domain: ${domain} — returning cached result`);
+      logger.info(`[aiAwareness] Cache HIT — ${domain}`);
 
-      // Save a record that this was a cached replay
-      await insertAwarenessScan(
-        domain,
-        engines,
-        cached.overallScore || 0,
-        cached,
-        true // cached = true
-      );
+      await insertAwarenessScan(domain, engines, cached.overallScore || 0, cached, true)
+        .catch(err => logger.warn(`[aiAwareness] Cache record insert failed: ${err.message}`));
 
       return res.status(200).json({
         ...cached,
-        cached: true,
+        cached:         true,
         domain,
         scanDurationMs: Date.now() - requestStart
       });
     }
 
-    logger.info(`[aiAwareness] Cache MISS for domain: ${domain} — running full scan`);
+    logger.info(`[aiAwareness] Cache MISS — running full scan for ${domain}`);
 
     // ── Step 3: Query all engines in parallel ──
     const engineResults = await queryAllEngines(domain, engines, keys);
+    const queriedCount  = Object.keys(engineResults).length;
 
-    const queriedCount = Object.keys(engineResults).length;
-    logger.info(
-      `[aiAwareness] Engine queries complete — ${queriedCount} results received`
-    );
+    logger.info(`[aiAwareness] Engine queries complete — ${queriedCount} results`);
 
     if (queriedCount === 0) {
       logger.error('[aiAwareness] All engines failed to return results');
@@ -339,7 +421,7 @@ async function aiAwarenessHandler(req, res) {
       });
     }
 
-    // ── Step 4: Score all engine results ──
+    // ── Step 4: Score ──
     const {
       scoredEngines,
       overallScore,
@@ -348,18 +430,16 @@ async function aiAwarenessHandler(req, res) {
       tierDescription
     } = scoreAllEngines(engineResults);
 
-    logger.info(
-      `[aiAwareness] Scoring complete — overall: ${overallScore} | tier: ${tier}`
-    );
+    logger.info(`[aiAwareness] Scoring complete — overall: ${overallScore} | tier: ${tier}`);
 
-    // ── Step 5: Analyse cross-engine consistency ──
+    // ── Step 5: Consistency ──
     const consistencyResult = analyseConsistency(scoredEngines);
 
     logger.info(
       `[aiAwareness] Consistency: ${consistencyResult.score} | ${consistencyResult.label}`
     );
 
-    // ── Step 6: Identify narrative gaps ──
+    // ── Step 6: Gaps ──
     const narrativeGaps = identifyNarrativeGaps(
       scoredEngines,
       consistencyResult,
@@ -367,11 +447,11 @@ async function aiAwarenessHandler(req, res) {
     );
 
     logger.info(
-      `[aiAwareness] Gaps identified: ${narrativeGaps.length} ` +
+      `[aiAwareness] Gaps: ${narrativeGaps.length} ` +
       `(${narrativeGaps.filter(g => g.severity === 'critical').length} critical)`
     );
 
-    // ── Step 7: Generate recommendations ──
+    // ── Step 7: Recommendations ──
     const recommendations = generateRecommendations(
       scoredEngines,
       consistencyResult,
@@ -381,14 +461,9 @@ async function aiAwarenessHandler(req, res) {
       domain
     );
 
-    logger.info(
-      `[aiAwareness] Recommendations generated: ${recommendations.length}`
-    );
+    logger.info(`[aiAwareness] Recommendations: ${recommendations.length}`);
 
-    // ── Step 8: Assemble engine response payloads ──
-    // Map internal engine keys to frontend keys and build per-engine objects.
-    // Engines not requested are not included in the response at all —
-    // the frontend handles missing engine keys gracefully.
+    // ── Step 8: Assemble engine payloads with full error sanitisation ──
     const enginePayloads = {};
 
     for (const [engineKey, scoredData] of Object.entries(scoredEngines)) {
@@ -396,55 +471,51 @@ async function aiAwarenessHandler(req, res) {
       enginePayloads[frontendKey] = payload;
     }
 
-    // ── Step 9: Assemble the complete response ──
-    // This shape must exactly match what the frontend renderResults() expects.
+    // ── Step 9: Assemble complete response ──
     const scanDurationMs = Date.now() - requestStart;
 
     const responseBody = {
       success:     true,
       cached:      false,
       domain,
-      engines:     engines.map(e => ({
+
+      // Engine metadata array — used by frontend for dynamic rendering
+      // and for pulling current model names from the backend
+      engines: engines.map(e => ({
         key:         e,
+        frontendKey: FRONTEND_KEY_MAP[e] || e,
         displayName: ENGINE_DISPLAY_NAMES[e] || e,
         queried:     true,
         failed:      scoredEngines[e]?.failed ?? false
       })),
+
       overallScore,
       tier,
       tierClass,
       tierDescription,
 
-      // ── Per-engine results ──
-      // Only include engines that were actually queried.
-      // Frontend checks for key existence before rendering.
+      // Per-engine results — keyed by frontend key (metaAI, googleAI, etc.)
       ...enginePayloads,
 
-      // ── Cross-engine analysis ──
+      // Cross-engine analysis
       consistency: {
-        score:          consistencyResult.score,
-        label:          consistencyResult.label,
-        agreed:         consistencyResult.agreed,
-        conflicted:     consistencyResult.conflicted,
-        exclusive:      consistencyResult.exclusive,
-        engineCount:    consistencyResult.engineCount,
+        score:           consistencyResult.score,
+        label:           consistencyResult.label,
+        agreed:          consistencyResult.agreed,
+        conflicted:      consistencyResult.conflicted,
+        exclusive:       consistencyResult.exclusive,
+        engineCount:     consistencyResult.engineCount,
         dimensionScores: consistencyResult.dimensionScores
       },
 
-      // ── Narrative gaps ──
       narrativeGaps,
-
-      // ── Recommendations ──
       recommendations,
 
-      // ── Metadata ──
       scanDurationMs,
       scannedAt: new Date().toISOString()
     };
 
-    // ── Step 10: Persist to database ──
-    // Fire-and-forget — a failed DB write must never delay or break the response.
-    // insertAwarenessScan catches its own errors internally.
+    // ── Step 10: Persist — fire and forget ──
     insertAwarenessScan(
       domain,
       engines,
@@ -455,11 +526,10 @@ async function aiAwarenessHandler(req, res) {
       logger.warn(`[aiAwareness] Background DB insert failed: ${err.message}`);
     });
 
-    // ── Step 11: Return response ──
+    // ── Step 11: Return ──
     logger.info(
-      `[aiAwareness] Scan complete — domain: ${domain} | ` +
-      `score: ${overallScore} | tier: ${tier} | ` +
-      `duration: ${scanDurationMs}ms`
+      `[aiAwareness] Complete — domain: ${domain} | score: ${overallScore} | ` +
+      `tier: ${tier} | duration: ${scanDurationMs}ms`
     );
 
     return res.status(200).json(responseBody);
@@ -468,8 +538,7 @@ async function aiAwarenessHandler(req, res) {
     const scanDurationMs = Date.now() - requestStart;
 
     logger.error(
-      `[aiAwareness] Unhandled error for domain ${domain}: ` +
-      `${err.message} | stack: ${err.stack}`
+      `[aiAwareness] Unhandled error for ${domain}: ${err.message} | stack: ${err.stack}`
     );
 
     return res.status(500).json({
@@ -477,16 +546,15 @@ async function aiAwarenessHandler(req, res) {
       error:          'An internal error occurred while processing the awareness scan. Please try again.',
       domain,
       scanDurationMs,
-      // Include partial data if available — helps frontend degrade gracefully
       overallScore:   0,
       narrativeGaps:  [],
       recommendations: [],
       consistency: {
-        score:       0,
-        label:       'ANALYSIS FAILED',
-        agreed:      [],
-        conflicted:  [],
-        exclusive:   []
+        score:      0,
+        label:      'ANALYSIS FAILED',
+        agreed:     [],
+        conflicted: [],
+        exclusive:  []
       }
     });
   }
