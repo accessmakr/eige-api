@@ -13,61 +13,58 @@ const ANTHROPIC_URL       = 'https://api.anthropic.com/v1/messages';
 
 // ─── MODEL PREFERENCE LISTS ───────────────────────────────────────────────────
 // Ordered best-first. Auto-detection picks the first entry that the provider
-// actually has live. If none match, the last entry is used as a hard fallback
-// (the provider will then return a proper error rather than a silent wrong model).
-//
-// Update these lists as providers deprecate/add models — the runtime resolver
-// means no code changes are needed elsewhere in the system.
+// actually has live. If none match, the last entry is used as a hard fallback.
 
 const GROQ_META_PREFERENCE = [
-  'llama-3.3-70b-versatile',   // current flagship
-  'llama-3.1-70b-versatile',   // previous flagship (may still be live)
-  'llama3-70b-8192',           // older alias
-  'llama-3.1-8b-instant',      // fallback if 70b unavailable
-  'llama3-8b-8192'             // last-resort fallback
+  'llama-3.3-70b-versatile',
+  'llama-3.1-70b-versatile',
+  'llama3-70b-8192',
+  'llama-3.1-8b-instant',
+  'llama3-8b-8192'
 ];
 
 const GROQ_MISTRAL_PREFERENCE = [
-  'gemma2-9b-it',              // distinct model identity — Google Gemma via Groq
-  'llama-3.1-8b-instant',      // fast, distinct from the 70b meta slot
-  'llama3-8b-8192',            // older alias
-  'mixtral-8x7b-32768'         // original — kept last; will fail if decommissioned
+  'llama-3.1-8b-instant',
+  'llama3-8b-8192',
+  'mixtral-8x7b-32768'
+];
+
+// NEW: Gemma preference list — Google Gemma 2 9B via Groq
+// gemma2-9b-it is the primary model for the Gemma engine slot.
+// Provides a distinct third model identity from Meta AI and Mistral.
+const GROQ_GEMMA_PREFERENCE = [
+  'gemma2-9b-it',          // Google Gemma 2 9B — primary
+  'gemma-7b-it',           // older Gemma variant — fallback
+  'llama-3.1-8b-instant'   // last resort if no Gemma model available
 ];
 
 const GEMINI_PREFERENCE = [
-  'gemini-2.0-flash',          // current stable fast model
-  'gemini-2.5-flash',          // preview/latest
-  'gemini-2.0-flash-lite',     // lighter variant
-  'gemini-1.5-flash',          // previous generation (may still be live)
-  'gemini-1.0-pro'             // last-resort fallback
+  'gemini-2.0-flash',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash',
+  'gemini-1.0-pro'
 ];
 
-// Static models (user-supplied keys — no auto-detect needed)
+// Static models — user-supplied keys, no auto-detect needed
 const STATIC_MODELS = {
   chatgpt: 'gpt-4o',
   claude:  'claude-3-5-sonnet-20241022'
 };
 
 // ─── MODEL RESOLUTION CACHE ───────────────────────────────────────────────────
-// Resolved once per process lifetime. Avoids a model-list API call on every scan.
-// Null = not yet resolved. String = resolved model id.
+// Resolved once per process lifetime. Null = not yet resolved.
+// NEW: gemma slot added alongside meta, mistral, google.
 
 const _resolvedModels = {
   meta:    null,
   mistral: null,
-  google:  null
+  google:  null,
+  gemma:   null   // NEW
 };
 
 // ─── GROQ MODEL RESOLVER ──────────────────────────────────────────────────────
-/**
- * Fetch the live Groq model list and select the best available model from a
- * preference-ranked list.
- *
- * @param {string[]} preferenceList - ordered best-first
- * @param {string}   groqKey
- * @param {string}   slotLabel      - for logging only
- * @returns {Promise<string>}       - resolved model id
- */
+
 async function resolveGroqModel(preferenceList, groqKey, slotLabel) {
   try {
     const response = await fetch(GROQ_MODELS_URL, {
@@ -98,8 +95,6 @@ async function resolveGroqModel(preferenceList, groqKey, slotLabel) {
       }
     }
 
-    // None of our preferences are live — use first preference and let the API
-    // return a proper deprecation error rather than silently using a wrong model
     logger.warn(
       `[ModelResolver/${slotLabel}] No preference matched live models. ` +
       `Falling back to: ${preferenceList[0]}. ` +
@@ -114,13 +109,7 @@ async function resolveGroqModel(preferenceList, groqKey, slotLabel) {
 }
 
 // ─── GEMINI MODEL RESOLVER ────────────────────────────────────────────────────
-/**
- * Fetch the live Gemini model list and select the best available model that
- * supports generateContent.
- *
- * @param {string} geminiKey
- * @returns {Promise<string>} - resolved model id (bare, e.g. "gemini-2.0-flash")
- */
+
 async function resolveGeminiModel(geminiKey) {
   try {
     const response = await fetch(`${GEMINI_MODELS_URL}?key=${geminiKey}`, {
@@ -136,8 +125,6 @@ async function resolveGeminiModel(geminiKey) {
 
     const data = await response.json().catch(() => null);
 
-    // Each model object looks like:
-    //   { name: "models/gemini-2.0-flash", supportedGenerationMethods: ["generateContent", ...] }
     const liveGenerateModels = new Set(
       (data?.models || [])
         .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
@@ -166,7 +153,7 @@ async function resolveGeminiModel(geminiKey) {
 }
 
 // ─── LAZY RESOLVERS ───────────────────────────────────────────────────────────
-// Called once before the first real query. Subsequent calls return the cached value.
+// Called once before the first real query. Subsequent calls return cached value.
 
 async function getMetaModel() {
   if (!_resolvedModels.meta) {
@@ -198,48 +185,31 @@ async function getGeminiModel() {
   return _resolvedModels.google;
 }
 
+// NEW: Gemma lazy resolver
+// Uses GROQ_GEMMA_PREFERENCE — gemma2-9b-it is the primary target.
+// Resolution uses the server Groq key or user-supplied key if provided.
+async function getGemmaModel(userGroqKey) {
+  if (!_resolvedModels.gemma) {
+    const key = userGroqKey || process.env.GROQ_API_KEY;
+    _resolvedModels.gemma = key
+      ? await resolveGroqModel(GROQ_GEMMA_PREFERENCE, key, 'Gemma')
+      : GROQ_GEMMA_PREFERENCE[0];
+  }
+  return _resolvedModels.gemma;
+}
+
 // ─── REQUEST PARAMETERS ───────────────────────────────────────────────────────
 
 const TIMEOUT_MS  = 35000;
 const MAX_TOKENS  = 1200;
-// Temperature 0.4 — slightly higher than pure factual mode so the model
-// draws on its full training signal including informal cultural knowledge,
-// not just its encyclopaedic fact recall mode
 const TEMPERATURE = 0.4;
 
 // ─── PRIMARY AWARENESS PROBE ──────────────────────────────────────────────────
 /**
- * The primary prompt is the most important design decision in this entire system.
- *
- * DESIGN PRINCIPLES:
- *
- * 1. DO NOT force a rigid numbered structure for the main response.
- *    Numbered lists push AI models into encyclopaedia/Wikipedia mode where
- *    they only surface formal facts. We want them to draw on ALL of their
- *    training signal — forums, social media, community discussions, reviews,
- *    comparisons, tutorials, casual mentions, cultural references.
- *
- * 2. Explicitly invite informal knowledge.
- *    Ask about community perception, how people talk about it online,
- *    social media presence, recommendations in communities. This unlocks
- *    the training signal that comes from Reddit, Twitter/X, YouTube,
- *    TikTok, Hacker News, Product Hunt, Discord, review sites, blogs.
- *
- * 3. Ask open-ended perception questions before fact questions.
- *    Perception questions activate the model's associative/cultural memory.
- *    Fact questions activate its encyclopaedic memory.
- *    We want both, but informal/cultural comes first.
- *
- * 4. Never penalise absence of intrinsic facts.
- *    The prompt must make clear that knowing a brand casually is as
- *    valid as knowing its founding year. "I've seen this recommended on
- *    Reddit constantly" is valuable AI awareness data.
- *
- * 5. Ask the model to be honest about confidence level without
- *    creating anxiety about it — anxious models over-hedge everything.
- *
- * @param {string} domain - normalised domain e.g. "stripe.com"
- * @returns {string}
+ * Open-ended awareness prompt designed to elicit BOTH formal and informal
+ * knowledge. Does NOT use rigid numbered structure — numbered lists push
+ * models into Wikipedia mode. Free-form prose activates the full training
+ * signal including Reddit, Twitter, YouTube, community discussion, reviews.
  */
 function buildAwarenessPrompt(domain) {
   return `Tell me everything you know about the brand, product, company, or website at: ${domain}
@@ -264,13 +234,7 @@ Be honest about your confidence at the end: how certain are you about what you w
 }
 
 // ─── STRUCTURED SIGNAL EXTRACTION PROMPT ──────────────────────────────────────
-/**
- * The second-turn prompt extracts structured signals from the free-form
- * primary response. Captures both formal and informal knowledge dimensions.
- *
- * @param {string} primaryResponse
- * @returns {string}
- */
+
 function buildVerificationPrompt(primaryResponse) {
   return `Based on what you just wrote, now provide a structured signal extraction. Use exactly this format — one value per line, nothing else:
 
@@ -293,9 +257,7 @@ Reply with only these 14 lines. No other text.`;
 }
 
 // ─── FETCH WRAPPER ────────────────────────────────────────────────────────────
-/**
- * Generic fetch with timeout. Returns structured result — never throws.
- */
+
 async function safeFetch(url, options, engineName) {
   const controller    = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -329,19 +291,31 @@ async function safeFetch(url, options, engineName) {
 
 // ─── GROQ ENGINE ─────────────────────────────────────────────────────────────
 /**
- * Query Groq API. Model is resolved at first call via the live models endpoint
- * then cached — never hardcoded.
+ * Query Groq API.
+ *
+ * FIX A9 / C3: Now accepts optional userGroqKey parameter.
+ * If provided, uses the user's own Groq API key for the query.
+ * Falls back to the server GROQ_API_KEY environment variable.
+ * This allows users who add their own Groq key in Settings to use
+ * their own quota rather than the server's shared quota.
+ *
+ * @param {string}   domain
+ * @param {Function} modelResolver  - lazy resolver function (getMetaModel, etc.)
+ * @param {string}   engineLabel
+ * @param {string}   [userGroqKey]  - optional user-supplied Groq API key
  */
-async function queryGroq(domain, modelResolver, engineLabel) {
-  const groqKey = process.env.GROQ_API_KEY;
+async function queryGroq(domain, modelResolver, engineLabel, userGroqKey) {
+  // Use user key if provided, fall back to server key
+  const groqKey = (userGroqKey && userGroqKey.trim().length > 10)
+    ? userGroqKey.trim()
+    : process.env.GROQ_API_KEY;
+
   if (!groqKey) {
     logger.error(`GROQ_API_KEY not set — cannot query ${engineLabel}`);
     return { primaryText: '', verificationText: '', error: 'GROQ_API_KEY not configured' };
   }
 
-  // Resolve model id (cached after first call)
-  const model = await modelResolver();
-
+  const model = await modelResolver(userGroqKey);
   logger.info(`[${engineLabel}] Using model: ${model}`);
 
   const headers = {
@@ -349,7 +323,6 @@ async function queryGroq(domain, modelResolver, engineLabel) {
     'Authorization': `Bearer ${groqKey}`
   };
 
-  // ── Turn 1: open-ended awareness probe ──
   logger.info(`[${engineLabel}] Sending awareness probe — domain: ${domain}`);
 
   const primaryPayload = {
@@ -368,11 +341,11 @@ async function queryGroq(domain, modelResolver, engineLabel) {
   );
 
   if (!primaryResult.ok) {
-    // If this model was just deprecated, invalidate cache so next call re-resolves
     if (primaryResult.error && /decommission|deprecated|no longer supported/i.test(primaryResult.error)) {
       logger.warn(`[${engineLabel}] Model ${model} appears decommissioned — clearing cache for re-resolution`);
       if (engineLabel === 'Meta AI') _resolvedModels.meta    = null;
       if (engineLabel === 'Mistral') _resolvedModels.mistral = null;
+      if (engineLabel === 'Gemma')   _resolvedModels.gemma   = null;
     }
     return { primaryText: '', verificationText: '', error: primaryResult.error };
   }
@@ -386,7 +359,6 @@ async function queryGroq(domain, modelResolver, engineLabel) {
 
   logger.info(`[${engineLabel}] Primary response: ${primaryText.length} chars`);
 
-  // ── Turn 2: structured signal extraction ──
   const verificationPayload = {
     model,
     messages: [
@@ -395,7 +367,7 @@ async function queryGroq(domain, modelResolver, engineLabel) {
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
     ],
     max_tokens:  400,
-    temperature: 0.05,  // near-zero for deterministic structured extraction
+    temperature: 0.05,
     stream:      false
   };
 
@@ -416,21 +388,29 @@ async function queryGroq(domain, modelResolver, engineLabel) {
 
 // ─── GEMINI ENGINE ────────────────────────────────────────────────────────────
 /**
- * Query Gemini. Model is resolved at first call via the live models endpoint
- * then cached — never hardcoded. The generateContent URL is built dynamically
- * from the resolved model id.
+ * Query Gemini.
+ *
+ * FIX A8 / C2: Now accepts optional userGeminiKey parameter.
+ * If provided, uses the user's own Gemini API key for the query.
+ * Falls back to server GEMINI_API_KEY.
+ * Allows users who add their own Gemini key in Settings to restore
+ * Google AI engine when the server key quota is exhausted.
+ *
+ * @param {string} domain
+ * @param {string} [userGeminiKey] - optional user-supplied Gemini API key
  */
-async function queryGemini(domain) {
-  const geminiKey = process.env.GEMINI_API_KEY;
+async function queryGemini(domain, userGeminiKey) {
+  // Use user key if provided, fall back to server key
+  const geminiKey = (userGeminiKey && userGeminiKey.trim().length > 10)
+    ? userGeminiKey.trim()
+    : process.env.GEMINI_API_KEY;
+
   if (!geminiKey) {
     logger.error('GEMINI_API_KEY not set — cannot query Google AI');
     return { primaryText: '', verificationText: '', error: 'GEMINI_API_KEY not configured' };
   }
 
-  // Resolve model id (cached after first call)
   const model = await getGeminiModel();
-
-  // Build the URL dynamically from the resolved model — no hardcoded path
   const generateUrl = `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${geminiKey}`;
 
   logger.info(`[Google AI] Using model: ${model}`);
@@ -444,7 +424,6 @@ async function queryGemini(domain) {
     maxOutputTokens: MAX_TOKENS
   };
 
-  // ── Turn 1 ──
   const primaryPayload = {
     contents: [{
       role:  'user',
@@ -460,7 +439,6 @@ async function queryGemini(domain) {
   );
 
   if (!primaryResult.ok) {
-    // If this model was just deprecated, invalidate cache so next call re-resolves
     if (primaryResult.error && /not found|deprecated|not supported/i.test(primaryResult.error)) {
       logger.warn(`[Google AI] Model ${model} appears unavailable — clearing cache for re-resolution`);
       _resolvedModels.google = null;
@@ -484,7 +462,6 @@ async function queryGemini(domain) {
 
   logger.info(`[Google AI] Primary response: ${primaryText.length} chars`);
 
-  // ── Turn 2: structured signal extraction ──
   const verificationPayload = {
     contents: [
       { role: 'user',  parts: [{ text: buildAwarenessPrompt(domain) }] },
@@ -510,6 +487,7 @@ async function queryGemini(domain) {
 }
 
 // ─── OPENAI ENGINE (user key) ─────────────────────────────────────────────────
+
 async function queryOpenAI(domain, userOpenAIKey) {
   if (!userOpenAIKey || typeof userOpenAIKey !== 'string' || userOpenAIKey.trim().length < 20) {
     return { primaryText: '', verificationText: '', error: 'Invalid or missing OpenAI API key' };
@@ -577,6 +555,7 @@ async function queryOpenAI(domain, userOpenAIKey) {
 }
 
 // ─── ANTHROPIC ENGINE (user key) ──────────────────────────────────────────────
+
 async function queryAnthropic(domain, userAnthropicKey) {
   if (!userAnthropicKey || typeof userAnthropicKey !== 'string' || userAnthropicKey.trim().length < 20) {
     return { primaryText: '', verificationText: '', error: 'Invalid or missing Anthropic API key' };
@@ -645,27 +624,7 @@ async function queryAnthropic(domain, userAnthropicKey) {
 }
 
 // ─── VERIFICATION BLOCK PARSER ────────────────────────────────────────────────
-/**
- * Parse the 14-line structured verification block.
- *
- * @param {string} text
- * @returns {{
- *   recognition: string,
- *   accurateClaims: number,
- *   conflictingClaims: number,
- *   unverifiableClaims: number,
- *   topicsKnown: string[],
- *   topicsUnknown: string[],
- *   sentiment: string,
- *   communityPresent: boolean,
- *   recommended: string,
- *   socialFootprint: string,
- *   viralitySignal: boolean,
- *   informalScore: number,
- *   formalScore: number,
- *   confidence: number
- * }}
- */
+
 function parseVerificationBlock(text) {
   const defaults = {
     recognition:        'unknown',
@@ -747,10 +706,12 @@ function parseVerificationBlock(text) {
 
 // ─── NARRATIVE EXTRACTOR ──────────────────────────────────────────────────────
 /**
- * Extract the display narrative from the model's primary response.
+ * Extract display narrative from the model's primary response.
  *
- * @param {string} primaryText
- * @returns {{ narrative: string, rawConfidenceScore: number }}
+ * FIX A11: MAX_DISPLAY_CHARS increased from 700 to 1200.
+ * For popular brands with rich AI knowledge, 700 chars was cutting off
+ * the most valuable content. 1200 chars allows the full narrative to
+ * surface while remaining appropriate for display in the narrative card.
  */
 function extractNarrative(primaryText) {
   if (!primaryText || primaryText.trim().length === 0) {
@@ -801,7 +762,8 @@ function extractNarrative(primaryText) {
     };
   }
 
-  const MAX_DISPLAY_CHARS = 700;
+  // FIX A11: increased from 700 to 1200
+  const MAX_DISPLAY_CHARS = 1200;
   let narrative = cleaned;
 
   if (cleaned.length > MAX_DISPLAY_CHARS) {
@@ -819,13 +781,15 @@ function extractNarrative(primaryText) {
 // ─── MAIN EXPORT: queryAllEngines ────────────────────────────────────────────
 /**
  * Query all requested engines in parallel.
- * Returns a results map with both raw text and fully parsed signal data.
- * One engine failing never blocks others.
  *
- * @param {string}   domain   - normalised domain e.g. "stripe.com"
- * @param {string[]} engines  - e.g. ['meta', 'google', 'mistral']
- * @param {{ openai?: string, anthropic?: string }} keys
- * @returns {Promise<Object>}
+ * FIX A7 / C1: Gemma engine case added.
+ * FIX A8 / C2: keys.gemini passed to queryGemini().
+ * FIX A9 / C3: keys.groq passed to all queryGroq() calls.
+ * FIX scorer wire: verificationRecognition now set on every result.
+ *
+ * @param {string}   domain
+ * @param {string[]} engines
+ * @param {{ openai?: string, anthropic?: string, gemini?: string, groq?: string }} keys
  */
 async function queryAllEngines(domain, engines, keys = {}) {
   logger.info(
@@ -837,21 +801,38 @@ async function queryAllEngines(domain, engines, keys = {}) {
 
     switch (engine) {
       case 'meta':
-        // Pass the lazy resolver — model is resolved once then cached
-        promise = queryGroq(domain, getMetaModel, 'Meta AI');
+        // Pass user Groq key if provided (A9/C3)
+        promise = queryGroq(domain, getMetaModel, 'Meta AI', keys.groq || '');
         break;
+
       case 'mistral':
-        promise = queryGroq(domain, getMistralModel, 'Mistral');
+        promise = queryGroq(domain, getMistralModel, 'Mistral', keys.groq || '');
         break;
+
+      case 'gemma':
+        // NEW (A7/C1): Gemma engine using Groq-hosted gemma2-9b-it
+        // Uses user Groq key if provided, falls back to server key
+        promise = queryGroq(
+          domain,
+          (userKey) => getGemmaModel(userKey || keys.groq || ''),
+          'Gemma',
+          keys.groq || ''
+        );
+        break;
+
       case 'google':
-        promise = queryGemini(domain);
+        // Pass user Gemini key if provided (A8/C2)
+        promise = queryGemini(domain, keys.gemini || '');
         break;
+
       case 'chatgpt':
         promise = queryOpenAI(domain, keys.openai || '');
         break;
+
       case 'claude':
         promise = queryAnthropic(domain, keys.anthropic || '');
         break;
+
       default:
         logger.warn(`Unknown engine: ${engine} — skipping`);
         promise = Promise.resolve({
@@ -868,7 +849,6 @@ async function queryAllEngines(domain, engines, keys = {}) {
       });
   });
 
-  // All engines in parallel — total latency = slowest engine only
   const settled = await Promise.allSettled(queryTasks);
 
   const results = {};
@@ -890,11 +870,13 @@ async function queryAllEngines(domain, engines, keys = {}) {
       verificationText,
       narrative,
       rawConfidenceScore,
+      // Standard claim counts
       accurateClaims:     verification.accurateClaims,
       conflictingClaims:  verification.conflictingClaims,
       unverifiableClaims: verification.unverifiableClaims,
       topicsKnown:        verification.topicsKnown,
       topicsUnknown:      verification.topicsUnknown,
+      // Informal/social signal dimensions
       sentiment:          verification.sentiment,
       communityPresent:   verification.communityPresent,
       recommended:        verification.recommended,
@@ -902,8 +884,14 @@ async function queryAllEngines(domain, engines, keys = {}) {
       viralitySignal:     verification.viralitySignal,
       informalScore:      verification.informalScore,
       formalScore:        verification.formalScore,
+      // Raw confidence for scorer
       rawConfidenceScore: verification.confidence || rawConfidenceScore,
-      error:              error || null
+      // SCORER WIRE FIX: verificationRecognition connects the RECOGNITION
+      // field from the verification block directly to scoreRecognition()
+      // in scorer.js. Without this field the scorer falls back to
+      // 'unknown' for verificationRecognition on every engine.
+      verificationRecognition: verification.recognition,
+      error: error || null
     };
 
     if (error) {
@@ -912,7 +900,8 @@ async function queryAllEngines(domain, engines, keys = {}) {
       logger.info(
         `Engine ${engine} processed — chars: ${primaryText.length} | ` +
         `informal: ${verification.informalScore}/10 | formal: ${verification.formalScore}/10 | ` +
-        `community: ${verification.communityPresent} | sentiment: ${verification.sentiment}`
+        `community: ${verification.communityPresent} | sentiment: ${verification.sentiment} | ` +
+        `recognition: ${verification.recognition}`
       );
     }
   }
