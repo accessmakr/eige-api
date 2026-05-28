@@ -21,12 +21,13 @@ const logger = require('../utils/logger');
 
 const SCAN_VERSION = 'v10.0.0';
 
+// ─── QUALITY THRESHOLD ────────────────────────────────────────────────────────
+// Reduced from 60 to 25. Major production websites score 30-40 due to
+// bot protection stripping headers and minimal meta tags on enterprise sites.
+// 25 captures real production data while filtering test and parked pages.
+const QUALITY_THRESHOLD = 25;
+
 // ─── URL NORMALISATION ────────────────────────────────────────────────────────
-// Normalise any URL format the user might paste into a clean hostname.
-// Handles: https://stripe.com/pricing → stripe.com
-//          http://www.stripe.com → stripe.com
-//          stripe.com/about → stripe.com
-//          STRIPE.COM → stripe.com
 
 function normaliseDomain(url) {
   if (!url || typeof url !== 'string') return null;
@@ -43,9 +44,6 @@ function normaliseDomain(url) {
 }
 
 // ─── CACHE KEY BUILDER ────────────────────────────────────────────────────────
-// Build a deterministic cache key from the domain and all option flags.
-// Any change in options produces a different cache key so a cached result
-// with withGraph=false is never served when withGraph=true is requested.
 
 function buildCacheKey(domain, options) {
   const flags = [
@@ -60,9 +58,6 @@ function buildCacheKey(domain, options) {
 }
 
 // ─── REQUEST ID GENERATOR ─────────────────────────────────────────────────────
-// Generate a unique ID for each scan request for distributed tracing.
-// This ID appears in all log entries for the request so the full lifecycle
-// of any scan can be traced through the logs by filtering on this ID.
 
 function generateRequestId() {
   const timestamp = Date.now().toString(36);
@@ -71,11 +66,6 @@ function generateRequestId() {
 }
 
 // ─── QUALITY PRE-SCORER ───────────────────────────────────────────────────────
-// Calculate a preliminary quality score for the scan result before saving.
-// This score is stored with the scan record so the learning job can filter
-// efficiently without recalculating quality for every historical scan.
-// This is a fast approximation — the learning job applies the full 7-gate
-// quality system. The pre-score filters out obvious low-quality results early.
 
 function calculateScanQualityPreScore(technologies, seo, performance, security) {
   let score = 0;
@@ -120,11 +110,6 @@ function calculateScanQualityPreScore(technologies, seo, performance, security) 
 }
 
 // ─── CHANGE DETECTION ─────────────────────────────────────────────────────────
-// Compare the current scan against the most recent previous scan of the
-// same domain to detect stack changes. This powers the stack change
-// detection feature — one of the five Phase 2 features planned.
-// Running this comparison on every scan means the data is always ready
-// when the history endpoint is implemented in Phase 2.
 
 function detectStackChanges(currentTechs, previousScan) {
   if (!previousScan || !previousScan.technologies) {
@@ -218,9 +203,6 @@ async function scanHandler(req, res) {
   try {
 
     // ── STEP 1 — Server-side cache check ──────────────────────────────────────
-    // Check the cache before doing any work. If a fresh cached result exists
-    // and cacheBypass is not requested, return it immediately.
-    // The cache key encodes all options so cached results are always option-specific.
 
     if (!cacheBypass) {
       const cacheKey = buildCacheKey(domain, {
@@ -246,17 +228,10 @@ async function scanHandler(req, res) {
     }
 
     // ── STEP 2 — Fetch previous scan for change detection ─────────────────────
-    // Fetch the most recent previous scan of this domain before we start
-    // the current scan. We do this early so it runs in parallel with the
-    // website fetch in Step 3. Change detection is a Phase 2 feature but
-    // collecting the data now means no backfill is needed when we build it.
 
     const previousScanPromise = getScansByDomain(domain, 1);
 
     // ── STEP 3 — Fetch the target website ─────────────────────────────────────
-    // Make an HTTP GET to the target domain with browser-like headers.
-    // A failed fetch returns a 502 error — the website is unreachable
-    // and no analysis can proceed.
 
     let fetchResult;
     try {
@@ -281,9 +256,6 @@ async function scanHandler(req, res) {
     const { html, rawHeaders, finalUrl, fetchMs } = fetchResult;
 
     // ── STEP 4 — Technology fingerprinting ────────────────────────────────────
-    // Run all technology patterns against the fetched HTML and headers.
-    // This is the core detection step — every other analysis depends on
-    // knowing what technologies are present.
 
     logger.info(`[${requestId}] Starting technology fingerprinting`);
     const technologies = await fingerprintTechnologies(
@@ -295,10 +267,6 @@ async function scanHandler(req, res) {
     logger.info(`[${requestId}] Fingerprinting complete — ${technologies.length} technologies detected`);
 
     // ── STEP 5 — Parallel analysis ────────────────────────────────────────────
-    // Run all five analysis engines simultaneously using Promise.all.
-    // Each engine is independent — there is no reason to run them sequentially.
-    // Running in parallel reduces total analysis time significantly.
-    // The previous scan fetch from Step 2 also resolves here.
 
     logger.info(`[${requestId}] Starting parallel analysis — infrastructure, security, SEO, performance, cluster, previous scan`);
 
@@ -325,9 +293,6 @@ async function scanHandler(req, res) {
     logger.info(`[${requestId}] Parallel analysis complete — cluster: ${cluster?.name}, security risk: ${security?.riskScore}`);
 
     // ── STEP 6 — Stack change detection ──────────────────────────────────────
-    // Compare current scan against the most recent previous scan.
-    // Returns null if this is the first scan of this domain.
-    // Returns a detailed change object if technologies have changed.
 
     const previousScan = previousScans && previousScans.length > 0
       ? previousScans[0]
@@ -340,10 +305,6 @@ async function scanHandler(req, res) {
     }
 
     // ── STEP 7 — Graph construction ───────────────────────────────────────────
-    // Build the per-scan technology relationship graph.
-    // Nodes are detected technologies sized by confidence.
-    // Edges connect all technology pairs weighted by average confidence.
-    // Cluster metadata is injected into all nodes for visual grouping.
 
     let graph = null;
     if (withGraph && technologies.length > 0) {
@@ -354,10 +315,6 @@ async function scanHandler(req, res) {
     }
 
     // ── STEP 8 — Intelligence generation ─────────────────────────────────────
-    // Generate the AI intelligence report from the knowledge base.
-    // This reads from tech_intelligence, architecture_patterns, and
-    // industry_benchmarks to produce specific, evidence-based analysis.
-    // Falls back to rule-based generation if the knowledge base is empty.
 
     let intelligence = null;
     if (withAI) {
@@ -374,21 +331,14 @@ async function scanHandler(req, res) {
     }
 
     // ── STEP 9 — Quality pre-scoring ─────────────────────────────────────────
-    // Calculate a preliminary quality score for this scan result.
-    // Stored with the scan record so the learning job can filter efficiently.
-    // High-quality scans (score >= 60) contribute to the learning database.
-    // Low-quality scans are stored but excluded from intelligence updates.
 
     const qualityScore = calculateScanQualityPreScore(
       technologies, seo, performance, security
     );
 
-    logger.info(`[${requestId}] Quality pre-score: ${qualityScore}/100 — ${qualityScore >= 60 ? 'qualifies for learning' : 'below learning threshold'}`);
+    logger.info(`[${requestId}] Quality pre-score: ${qualityScore}/100 — ${qualityScore >= QUALITY_THRESHOLD ? 'qualifies for learning' : 'below learning threshold'}`);
 
     // ── STEP 10 — Assemble response ────────────────────────────────────────────
-    // Build the complete response object from all analysis results.
-    // Every field that the frontend expects must be present here.
-    // Null values are acceptable for optional analyses that were not requested.
 
     const latency = Date.now() - t0;
     const timestamp = Date.now();
@@ -417,12 +367,8 @@ async function scanHandler(req, res) {
     };
 
     // ── STEP 11 — Background persistence ──────────────────────────────────────
-    // Save to cache, database, and update learning tables in the background.
-    // These operations happen AFTER the response is sent so the user never
-    // waits for database writes. Errors here are logged but never affect
-    // the response the user receives.
-    // The co-occurrence table is only updated from quality-passing scans
-    // to enforce the same quality standards as the learning job's Gate 5.
+    // Quality threshold is now 25 — real-world production websites qualify.
+    // Co-occurrence and tech intelligence updates only run for qualifying scans.
 
     const cacheKey = buildCacheKey(domain, {
       withGraph, withAI, withInfra, withSecurity, rawEvidence
@@ -449,11 +395,11 @@ async function scanHandler(req, res) {
         stackChanges: stackChanges || {}
       }),
 
-      qualityScore >= 60 && technologies.length >= 2
+      qualityScore >= QUALITY_THRESHOLD && technologies.length >= 2
         ? incrementCoOccurrence(technologies)
         : Promise.resolve(),
 
-      qualityScore >= 60
+      qualityScore >= QUALITY_THRESHOLD
         ? updateTechIntelligenceFromScan(technologies)
         : Promise.resolve()
 
