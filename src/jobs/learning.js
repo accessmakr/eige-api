@@ -16,7 +16,11 @@ const THRESHOLDS = {
 };
 
 // ─── QUALITY SCORE PASS MARK ─────────────────────────────────────────────────
-const QUALITY_PASS_MARK = 60;
+// Reduced from 60 to 25 — major production websites (CNN, BBC, Meta) score
+// 30-40 due to aggressive bot protection stripping headers and minimal
+// meta tags on enterprise sites. 25 captures real-world production data
+// while still filtering out test domains, parked pages, and error pages.
+const QUALITY_PASS_MARK = 25;
 
 // ─── OUTLIER DETECTION SENSITIVITY ───────────────────────────────────────────
 const OUTLIER_STD_DEVIATIONS = 1.5;
