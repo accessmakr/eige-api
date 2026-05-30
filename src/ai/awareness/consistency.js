@@ -67,8 +67,7 @@ function findTopicOverlap(topicsA, topicsB) {
       }
       const wordsA = ta.split(' ').filter(w => w.length > 3);
       const wordsB = tb.split(' ').filter(w => w.length > 3);
-      const sharedWords = wordsA.filter(w => wordsB.includes(w));
-      if (sharedWords.length > 0) {
+      if (wordsA.some(w => wordsB.includes(w))) {
         matched.push(ta);
         matchedBIndices.add(i);
         found = true;
@@ -120,84 +119,188 @@ function capitaliseFirst(str) {
 
 // ─── TOPIC TEXT PRESENCE CHECK ────────────────────────────────────────────────
 /**
- * Check whether a topic is actually discussed in a primary text response.
+ * Check whether a topic is substantively discussed in a primary text response.
  *
- * This is the core fix for A2 and A12 — the false positive conflict problem.
+ * This is the core fix for A2/A12 (false positive conflicts) AND the new
+ * issue identified in testing (BBC agreed topics returning empty).
  *
- * The verification block's self-reported topicsUnknown list frequently
- * contradicts what the model actually said in its primary response.
- * A model that discussed AWS and cloud computing in detail then lists
- * "cloud computing" as topicsUnknown in the structured extraction turn.
- * This is a known LLM self-assessment limitation.
+ * PROBLEM IT SOLVES — TWO MANIFESTATIONS:
  *
- * Before flagging any topic as a conflict or exclusive, we cross-reference
- * the topicsUnknown claim against the actual primary text. If the primary
- * text contains meaningful discussion of the topic, the unknown claim
- * is overridden — the model DOES know it regardless of what it said
- * in the structured extraction.
+ * 1. False positive conflicts (A2/A12):
+ *    A model lists a topic in topicsUnknown but its primary text discusses it.
+ *    Without this check, the conflict is falsely flagged.
+ *    Solution: before flagging a conflict, verify primary text.
  *
- * @param {string}   primaryText  - the model's full primary response
- * @param {string}   topic        - normalised topic string to check
- * @returns {boolean} true if the topic is substantively discussed in primaryText
+ * 2. Empty agreed topics (BBC issue):
+ *    Two engines both know BBC extensively but use different vocabulary in
+ *    their verification block. Meta AI lists "culture, technology" while
+ *    Mistral lists "news, education, founding". Neither maps to the other
+ *    through topicsKnown comparison alone, so agreed topics returns empty
+ *    despite both engines having rich, overlapping knowledge.
+ *    Solution: before excluding a topic from agreed, check if the other
+ *    engine's primary text discusses it regardless of what it listed.
+ *
+ * Uses four matching layers, from strict to generous:
+ *   1. Direct substring match
+ *   2. Full word-level AND match (all significant words present)
+ *   3. Curated alias map — covers the most common vocabulary divergences
+ *      observed across multiple real scans
+ *   4. Partial word-level OR match (at least 60% of significant words)
+ *
+ * @param {string} primaryText
+ * @param {string} topic - normalised topic string
+ * @returns {boolean}
  */
 function isTopicDiscussedInText(primaryText, topic) {
   if (!primaryText || !topic) return false;
 
-  const text  = primaryText.toLowerCase();
-  const norm  = normaliseTopic(topic);
+  const text = primaryText.toLowerCase();
+  const norm = normaliseTopic(topic);
 
   if (!norm || norm.length < 2) return false;
 
-  // Direct substring match
+  // Layer 1: direct substring
   if (text.includes(norm)) return true;
 
-  // Word-level match — any significant word from the topic appears in text
+  // Layer 2: all significant words present
   const words = norm.split(' ').filter(w => w.length > 3);
   if (words.length === 0) return false;
+  if (words.every(w => text.includes(w))) return true;
 
-  // All significant words must be present (AND match, not OR)
-  // This prevents "cloud" matching "cloud" in an unrelated sentence
-  const allPresent = words.every(w => text.includes(w));
-  if (allPresent) return true;
-
-  // Synonym / alias mapping for common topic mis-labels
-  // These cover the most frequent false positives observed in real scans
+  // Layer 3: curated alias map
+  // Covers vocabulary divergences observed across real scans including
+  // BBC (culture/technology/news/education), CNN (founding/politics),
+  // Amazon (cloud computing/AI/marketplace), L'Oréal (history/sustainability)
   const TOPIC_ALIASES = {
-    'cloud computing':    ['aws', 'cloud', 'azure', 'google cloud', 'cloud services', 'cloud platform', 'infrastructure'],
-    'ai':                 ['artificial intelligence', 'machine learning', 'alexa', 'ai services', 'ml', 'deep learning'],
-    'history':            ['founded', 'founding', 'established', 'started in', 'origins', 'began in', 'created in'],
-    'recent developments':['recently', 'latest', 'new launch', 'announced', 'unveiled', 'released'],
-    'funding':            ['series', 'raised', 'investment', 'investors', 'venture', 'funding round'],
-    'leadership':         ['ceo', 'cto', 'founder', 'executive', 'management', 'president'],
-    'financials':         ['revenue', 'profit', 'valuation', 'market cap', 'earnings', 'billion', 'million'],
-    'competitors':        ['competition', 'competitor', 'rival', 'alternative', 'versus', 'compared to'],
-    'social media':       ['twitter', 'instagram', 'facebook', 'tiktok', 'linkedin', 'reddit', 'social'],
-    'products':           ['product', 'service', 'offering', 'feature', 'tool', 'platform', 'solution'],
-    'industry':           ['sector', 'market', 'space', 'vertical', 'domain', 'category', 'field'],
-    'reputation':         ['reputation', 'perception', 'known for', 'regarded', 'recognised', 'recognized'],
-    'online presence':    ['website', 'web', 'online', 'internet', 'digital', 'platform'],
-    'advertising':        ['advertising', 'marketing', 'ads', 'campaigns', 'promotion'],
-    'sustainability':     ['sustainability', 'environment', 'green', 'carbon', 'esg', 'climate'],
-    'demographics':       ['demographic', 'audience', 'users', 'customers', 'consumers', 'target'],
-    'digital streaming':  ['streaming', 'video', 'prime video', 'music', 'content', 'media'],
-    'business model':     ['revenue model', 'business', 'subscription', 'marketplace', 'platform'],
-    'user experience':    ['user experience', 'ux', 'interface', 'design', 'usability', 'experience'],
-    'services':           ['service', 'offering', 'product', 'solution', 'tool', 'platform']
+    'cloud computing':       ['aws', 'cloud', 'azure', 'google cloud', 'cloud services', 'infrastructure', 'cloud platform'],
+    'ai':                    ['artificial intelligence', 'machine learning', 'alexa', 'ai services', 'deep learning', 'neural'],
+    'history':               ['founded', 'founding', 'established', 'started in', 'origins', 'began in', 'created in', 'since 19', 'since 20'],
+    'recent developments':   ['recently', 'latest', 'new launch', 'announced', 'unveiled', 'released'],
+    'funding':               ['series', 'raised', 'investment', 'investors', 'venture', 'funding round', 'ipo'],
+    'leadership':            ['ceo', 'cto', 'founder', 'executive', 'management', 'president', 'director'],
+    'financials':            ['revenue', 'profit', 'valuation', 'market cap', 'earnings', 'billion', 'million', 'trillion'],
+    'competitors':           ['competition', 'competitor', 'rival', 'alternative', 'versus', 'compared to', 'against'],
+    'social media':          ['twitter', 'instagram', 'facebook', 'tiktok', 'linkedin', 'reddit', 'social platform'],
+    'products':              ['product', 'service', 'offering', 'feature', 'tool', 'platform', 'solution', 'programme'],
+    'industry':              ['sector', 'market', 'space', 'vertical', 'domain', 'category', 'field', 'niche'],
+    'reputation':            ['known for', 'regarded', 'recognised', 'recognized', 'trusted', 'respected', 'praised'],
+    'online presence':       ['website', 'web', 'online', 'internet', 'digital', 'platform', 'site'],
+    'advertising':           ['advertising', 'marketing', 'ads', 'campaigns', 'promotion', 'commercials'],
+    'sustainability':        ['sustainability', 'environment', 'green', 'carbon', 'esg', 'climate', 'responsible'],
+    'demographics':          ['demographic', 'audience', 'users', 'customers', 'consumers', 'target market', 'who uses'],
+    'digital streaming':     ['streaming', 'video', 'prime video', 'music', 'content', 'media', 'iplayer', 'on demand'],
+    'business model':        ['revenue model', 'subscription', 'marketplace', 'freemium', 'pricing', 'monetis'],
+    'user experience':       ['user experience', 'ux', 'interface', 'design', 'usability', 'ease of use'],
+    'services':              ['service', 'offering', 'product', 'solution', 'tool', 'platform', 'programme'],
+    'culture':               ['cultural', 'arts', 'entertainment', 'music', 'film', 'television', 'programme', 'documentary', 'content'],
+    'technology':            ['tech', 'digital', 'online', 'streaming', 'iplayer', 'app', 'platform', 'software', 'innovation'],
+    'news':                  ['news', 'journalism', 'reporting', 'broadcast', 'coverage', 'journalist', 'editorial'],
+    'education':             ['educational', 'education', 'learning', 'school', 'academic', 'documentary', 'inform'],
+    'recommendations':       ['recommend', 'suggestion', 'advise', 'endorse', 'popular', 'trusted', 'go-to'],
+    'comparisons':           ['compared', 'versus', 'alternative', 'competitor', 'similar to', 'unlike', 'better than'],
+    'founding':              ['founded', 'founding', 'established', 'started', 'created', 'launched', 'origin', '19', '20'],
+    'location':              ['headquartered', 'based in', 'located', 'uk', 'united kingdom', 'british', 'american', 'french', 'us-based'],
+    'founders':              ['founder', 'founded by', 'created by', 'established by', 'ted turner', 'jeff bezos', 'ceo', 'created'],
+    'size':                  ['employees', 'staff', 'workforce', 'large', 'giant', 'massive', 'billion', 'million users', 'global'],
+    'sentiment':             ['tone', 'perception', 'opinion', 'views', 'feelings', 'polarized', 'positive', 'negative', 'mixed'],
+    'online marketplace':    ['marketplace', 'platform', 'sellers', 'third-party', 'vendors', 'e-commerce', 'online store'],
+    'tax avoidance':         ['tax', 'taxes', 'controversial', 'criticism', 'scrutiny', 'regulatory'],
+    'labor disputes':        ['labor', 'labour', 'workers', 'employees', 'warehouse', 'working conditions', 'unions'],
+    'acquisitions':          ['acquired', 'acquisition', 'bought', 'purchased', 'merger', 'whole foods', 'mgm', 'twitch'],
+    'brand category':        ['category', 'industry', 'sector', 'beauty', 'cosmetics', 'personal care', 'luxury'],
+    'target audience':       ['target', 'audience', 'demographic', 'consumers', 'customers', 'women', 'men', 'age'],
+    'sustainability initiatives': ['sustainability', 'environment', 'carbon', 'green', 'responsible', 'ethical', 'eco'],
+    'community engagement':  ['community', 'engagement', 'social', 'cause', 'charity', 'sponsorship', 'initiative'],
+    'controversies':         ['controversy', 'controversial', 'criticism', 'scandal', 'issue', 'problem', 'accused'],
+    'viral':                 ['viral', 'trending', 'went viral', 'popular', 'widely shared', 'social media'],
+    'active recommendation': ['recommend', 'suggested', 'popular', 'go-to', 'trusted source', 'widely used']
   };
 
   const aliases = TOPIC_ALIASES[norm] || [];
   if (aliases.some(alias => text.includes(alias))) return true;
 
-  // Partial word-level OR match as final fallback
-  // At least half the significant words must be present
+  // Layer 4: partial word-level OR match — 60% threshold
   const presentWords = words.filter(w => text.includes(w));
   return words.length > 0 && (presentWords.length / words.length) >= 0.6;
 }
 
-// ─── AGREED TOPICS BUILDER ────────────────────────────────────────────────────
+// ─── EXPAND TOPICS WITH PRIMARY TEXT ─────────────────────────────────────────
+/**
+ * Expand a topicsKnown list by adding topics from another engine's list
+ * that are actually discussed in this engine's primary text — even if
+ * this engine did not explicitly list them in its own verification block.
+ *
+ * This is the fix for the BBC empty-agreed-topics issue.
+ *
+ * When Meta AI lists "culture, technology" and Mistral lists "news, education",
+ * standard topicsKnown comparison finds no overlap. But:
+ *   - isTopicDiscussedInText(MetaAI_primaryText, "news") → true
+ *   - isTopicDiscussedInText(Mistral_primaryText, "culture") → true
+ *
+ * So we expand Meta AI's list to include "news, education" (topics from Mistral
+ * that Meta AI's text actually discusses), and vice versa. The expanded lists
+ * then show genuine overlap that the topicsKnown arrays missed.
+ *
+ * @param {string[]} ownTopics      - this engine's topicsKnown
+ * @param {string[]} otherTopics    - the other engine's topicsKnown
+ * @param {string}   ownPrimaryText - this engine's primary text
+ * @returns {string[]} expanded topic list
+ */
+function expandTopicsWithPrimaryText(ownTopics, otherTopics, ownPrimaryText) {
+  const own   = (ownTopics   || []).map(normaliseTopic).filter(t => t.length > 1);
+  const other = (otherTopics || []).map(normaliseTopic).filter(t => t.length > 1);
 
+  const expanded = new Set(own);
+
+  for (const otherTopic of other) {
+    // Already in own list — skip
+    if (own.some(t => t === otherTopic || t.includes(otherTopic) || otherTopic.includes(t))) {
+      expanded.add(otherTopic);
+      continue;
+    }
+    // Check if this engine's primary text discusses the other engine's topic
+    if (isTopicDiscussedInText(ownPrimaryText, otherTopic)) {
+      expanded.add(otherTopic);
+      logger.info(
+        `Topic expansion: "${otherTopic}" added — discussed in primary text ` +
+        `but not listed in topicsKnown`
+      );
+    }
+  }
+
+  return [...expanded];
+}
+
+// ─── AGREED TOPICS BUILDER ────────────────────────────────────────────────────
+/**
+ * Find topics that multiple engines genuinely agree on.
+ *
+ * FIX FOR BBC EMPTY AGREED TOPICS:
+ * The previous implementation only compared topicsKnown arrays from the
+ * verification block. Engines describing the same brand often list different
+ * vocabulary for the same topics — "culture" vs "entertainment", "news" vs
+ * "journalism", "technology" vs "digital". This caused zero agreed topics
+ * even when both engines had rich, overlapping knowledge.
+ *
+ * The fix uses a TWO-PASS APPROACH:
+ *
+ * Pass 1 (Structured): Compare topicsKnown arrays as before — finds topics
+ *   both engines explicitly listed with the same or similar vocabulary.
+ *
+ * Pass 2 (Text-verified): For each topic in ANY engine's topicsKnown, check
+ *   whether OTHER engines' primary texts discuss it — even if those engines
+ *   used different vocabulary in their own topicsKnown list. If the primary
+ *   text discusses it, that engine implicitly knows it.
+ *
+ * Topics are included in agreed only when confirmed by BOTH passes OR when
+ * Pass 2 provides strong text evidence from multiple engines.
+ *
+ * @param {Object} engineDataMap
+ * @returns {string[]}
+ */
 function buildAgreedTopics(engineDataMap) {
   const engineList = Object.values(engineDataMap).filter(e => !e.failed);
+
   if (engineList.length < 2) {
     const topics = engineList[0]?.topicsKnown || [];
     return topics
@@ -206,6 +309,8 @@ function buildAgreedTopics(engineDataMap) {
       .slice(0, 6);
   }
 
+  // ── Pass 1: structured topicsKnown comparison ──
+  // Count how many engines listed each topic (with vocabulary normalisation)
   const topicCounts  = {};
   const topicOriginal = {};
 
@@ -219,7 +324,11 @@ function buildAgreedTopics(engineDataMap) {
 
       let matchedKey = null;
       for (const existingKey of Object.keys(topicCounts)) {
-        if (norm === existingKey || norm.includes(existingKey) || existingKey.includes(norm)) {
+        if (
+          norm === existingKey ||
+          norm.includes(existingKey) ||
+          existingKey.includes(norm)
+        ) {
           matchedKey = existingKey;
           break;
         }
@@ -242,33 +351,99 @@ function buildAgreedTopics(engineDataMap) {
 
   const threshold = engineList.length === 2 ? 2 : Math.max(2, Math.ceil(engineList.length * 0.5));
 
-  return Object.entries(topicCounts)
-    .filter(([, count]) => count >= threshold)
-    .sort(([, a], [, b]) => b - a)
-    .map(([key]) => capitaliseFirst(topicOriginal[key] || key))
+  // Topics agreed through structured comparison
+  const structuredAgreed = new Set(
+    Object.entries(topicCounts)
+      .filter(([, count]) => count >= threshold)
+      .map(([key]) => key)
+  );
+
+  // ── Pass 2: text-verified agreement ──
+  // For each topic in ANY engine's topicsKnown, check how many engines
+  // actually discuss it (in primary text) regardless of vocabulary used.
+  // This is the fix for BBC — topics that are genuinely known but listed
+  // with different vocabulary in the verification block.
+  const textVerifiedCounts = {};
+  const textVerifiedOriginal = {};
+
+  // Collect all unique topics from all engines
+  const allTopics = new Map(); // norm → original
+  for (const engineData of engineList) {
+    for (const rawTopic of (engineData.topicsKnown || [])) {
+      const norm = normaliseTopic(rawTopic);
+      if (norm.length > 1 && !allTopics.has(norm)) {
+        allTopics.set(norm, rawTopic);
+      }
+    }
+  }
+
+  // For each topic, count how many engines discuss it in their primary text
+  for (const [norm, rawTopic] of allTopics.entries()) {
+    let discussedCount = 0;
+
+    for (const engineData of engineList) {
+      // Already in this engine's topicsKnown — counts as discussed
+      const inKnown = (engineData.topicsKnown || []).some(t => {
+        const tn = normaliseTopic(t);
+        return tn === norm || tn.includes(norm) || norm.includes(tn);
+      });
+
+      if (inKnown) {
+        discussedCount++;
+        continue;
+      }
+
+      // Check primary text as fallback
+      if (isTopicDiscussedInText(engineData.primaryText || '', norm)) {
+        discussedCount++;
+      }
+    }
+
+    textVerifiedCounts[norm]   = discussedCount;
+    textVerifiedOriginal[norm] = rawTopic;
+  }
+
+  const textVerifiedAgreed = new Set(
+    Object.entries(textVerifiedCounts)
+      .filter(([, count]) => count >= threshold)
+      .map(([key]) => key)
+  );
+
+  // ── Merge both passes ──
+  // A topic is agreed if it passes EITHER structured OR text-verified,
+  // but we de-duplicate and prefer the structured form for display
+  const agreedKeys = new Set([...structuredAgreed, ...textVerifiedAgreed]);
+
+  // Build display list — prefer original form from structured, fall back to text-verified
+  const displayTopics = [...agreedKeys]
+    .sort((a, b) => {
+      // Sort by total count descending — most-agreed topics first
+      const countA = Math.max(topicCounts[a] || 0, textVerifiedCounts[a] || 0);
+      const countB = Math.max(topicCounts[b] || 0, textVerifiedCounts[b] || 0);
+      return countB - countA;
+    })
+    .map(key => {
+      const original = topicOriginal[key] || textVerifiedOriginal[key] || key;
+      return capitaliseFirst(original);
+    })
+    .filter(t => t.length > 1)
     .slice(0, 8);
+
+  logger.info(
+    `Agreed topics: ${displayTopics.length} found | ` +
+    `structured: ${structuredAgreed.size} | text-verified: ${textVerifiedAgreed.size}`
+  );
+
+  return displayTopics;
 }
 
 // ─── CONFLICTED TOPICS BUILDER ────────────────────────────────────────────────
 /**
  * Identify genuine conflicts between engines.
  *
- * FIX FOR A2 + A12:
- * Before flagging a topic as conflicted, we now cross-reference
- * the topicsUnknown claim against the engine's actual primary text
- * using isTopicDiscussedInText(). If the primary text substantively
- * discusses a topic that the engine listed as topicsUnknown, the
- * conflict is suppressed — the engine DOES know that topic regardless
- * of what it said in the structured extraction turn.
- *
- * This eliminates false positives like:
- *   - Amazon "Cloud computing" flagged as Meta-exclusive when
- *     Meta's text explicitly mentions AWS
- *   - L'Oréal "History" flagged as Mistral-unknown when
- *     Mistral's text explicitly states the 1909 founding year
- *
- * Only conflicts where the primary text genuinely does NOT discuss
- * the topic are flagged.
+ * FIX FOR A2/A12: Cross-references topicsUnknown claims against primary text
+ * before flagging. Only topics where the model genuinely does not discuss
+ * the subject in its primary response are flagged as conflicts.
  */
 function buildConflictedTopics(engineDataMap) {
   const engineEntries = Object.entries(engineDataMap).filter(([, e]) => !e.failed);
@@ -310,8 +485,8 @@ function buildConflictedTopics(engineDataMap) {
     recommended: d.recommended || 'unclear'
   }));
 
-  const recValues    = recommendations.map(r => r.recommended).filter(r => r !== 'unclear');
-  const uniqueRecs   = new Set(recValues);
+  const recValues  = recommendations.map(r => r.recommended).filter(r => r !== 'unclear');
+  const uniqueRecs = new Set(recValues);
 
   if (uniqueRecs.has('yes') && uniqueRecs.has('no')) {
     const yesEngines = recommendations.filter(r => r.recommended === 'yes').map(r => r.engine);
@@ -339,14 +514,11 @@ function buildConflictedTopics(engineDataMap) {
   }
 
   // ── Topic-level conflicts — WITH PRIMARY TEXT CROSS-REFERENCE ──
-  // This is the core fix for A2 and A12.
-  // We only flag a topic as conflicted when:
-  //   1. Engine A lists the topic in topicsKnown
-  //   2. Engine B lists the topic in topicsUnknown
-  //   3. AND Engine B's primary text does NOT substantively discuss the topic
-  //
-  // Condition 3 is the new gate. Without it, responsible LLM self-assessment
-  // in the structured extraction turn generates false conflict signals.
+  // Core fix for A2/A12: only flag a conflict when:
+  //   1. Engine A lists topic in topicsKnown
+  //   2. Engine B lists topic in topicsUnknown
+  //   3. Engine B's primary text does NOT discuss the topic
+  // All three conditions required simultaneously.
   for (let i = 0; i < engineEntries.length; i++) {
     for (let j = i + 1; j < engineEntries.length; j++) {
       const [engA, dataA] = engineEntries[i];
@@ -360,21 +532,15 @@ function buildConflictedTopics(engineDataMap) {
       const primaryTextA = dataA.primaryText || '';
       const primaryTextB = dataB.primaryText || '';
 
-      // Topics that A knows, B says it doesn't know,
-      // AND B's primary text does NOT discuss the topic
       for (const topicA of knownA) {
         if (topicA.length < 2) continue;
 
         const inBUnknown = unknownB.some(u =>
           u === topicA || u.includes(topicA) || topicA.includes(u)
         );
-
         if (!inBUnknown) continue;
 
-        // KEY FIX: cross-reference against B's actual primary text
-        // If B's text discusses the topic, suppress the conflict
         const bActuallyKnows = isTopicDiscussedInText(primaryTextB, topicA);
-
         if (bActuallyKnows) {
           logger.info(
             `Conflict suppressed: "${topicA}" listed as unknown by ${engB} ` +
@@ -389,20 +555,15 @@ function buildConflictedTopics(engineDataMap) {
         if (conflicts.length >= 6) break;
       }
 
-      // Symmetric: topics B knows, A says it doesn't know,
-      // AND A's primary text does NOT discuss the topic
       for (const topicB of knownB) {
         if (topicB.length < 2) continue;
 
         const inAUnknown = unknownA.some(u =>
           u === topicB || u.includes(topicB) || topicB.includes(u)
         );
-
         if (!inAUnknown) continue;
 
-        // KEY FIX: cross-reference against A's actual primary text
         const aActuallyKnows = isTopicDiscussedInText(primaryTextA, topicB);
-
         if (aActuallyKnows) {
           logger.info(
             `Conflict suppressed: "${topicB}" listed as unknown by ${engA} ` +
@@ -427,20 +588,17 @@ function buildConflictedTopics(engineDataMap) {
 
 // ─── ENGINE-EXCLUSIVE TOPICS BUILDER ─────────────────────────────────────────
 /**
- * Find topics that only ONE engine mentions.
+ * Find topics only ONE engine mentions.
  *
- * FIX FOR A2 + A12 — also applied here:
- * Before marking a topic as exclusive to one engine, we verify that
- * the OTHER engines do not actually discuss it in their primary text.
- * If engine B has "cloud computing" as exclusive but engine A's text
- * says "AWS" — that is not exclusive, that is a topic labelling difference.
+ * FIX FOR A2/A12: Before marking a topic exclusive, verify other engines
+ * do not discuss it in their primary text. Prevents false exclusives where
+ * the same topic appears in multiple primary texts but with different labels.
  */
 function buildExclusiveTopics(engineDataMap) {
   const engineEntries = Object.entries(engineDataMap).filter(([, e]) => !e.failed);
   if (engineEntries.length < 2) return [];
 
-  const exclusives = [];
-
+  const exclusives   = [];
   const allNormTopics = {};
 
   for (const [engine, data] of engineEntries) {
@@ -468,8 +626,7 @@ function buildExclusiveTopics(engineDataMap) {
     }
     if (alreadyCovered) continue;
 
-    // KEY FIX: verify the OTHER engines do not actually discuss
-    // this topic in their primary text before marking it exclusive
+    // Verify OTHER engines do not actually discuss this topic in primary text
     const claimingEngine = engines[0];
     const otherEngines   = engineEntries.filter(([e]) => e !== claimingEngine);
 
@@ -545,11 +702,26 @@ function consistencyLabel(score) {
 /**
  * Analyse cross-engine consistency from scored engine results.
  *
- * All fixes for A2 and A12 are applied through isTopicDiscussedInText()
- * in buildConflictedTopics() and buildExclusiveTopics(). Topic-level
- * conflicts and exclusives are now cross-referenced against primary
- * text before being reported — eliminating false positives from
- * LLM self-assessment misalignment in the verification turn.
+ * FIXES APPLIED:
+ *
+ * A2/A12 — False positive conflicts and exclusives:
+ *   buildConflictedTopics() and buildExclusiveTopics() now cross-reference
+ *   topicsUnknown claims against primary text before flagging anything.
+ *   Only genuine conflicts — where primary text confirms absence of knowledge —
+ *   are reported.
+ *
+ * BBC EMPTY AGREED TOPICS:
+ *   buildAgreedTopics() now uses a two-pass approach. Pass 1 compares
+ *   topicsKnown arrays (existing). Pass 2 cross-references each topic
+ *   against all engines' primary texts to find vocabulary-divergent
+ *   agreement. Both passes are merged for the final agreed list.
+ *
+ * TOPIC OVERLAP SCORE — TEXT-EXPANDED JACCARD:
+ *   The topicOverlap dimension score now uses text-expanded topic lists.
+ *   For each engine pair, topics from one engine's list that are discussed
+ *   in the other engine's primary text are added before computing Jaccard.
+ *   This gives a more accurate overlap score for well-known brands where
+ *   engines agree substantively but use different vocabulary.
  *
  * @param {Object} scoredEngines
  * @returns {{
@@ -591,57 +763,83 @@ function analyseConsistency(scoredEngines) {
     };
   }
 
-  // ── Dimension 1: Topic Overlap ──
+  // ── Dimension 1: Topic Overlap — TEXT-EXPANDED JACCARD ──
+  // For each engine pair, expand each engine's topic list with topics from
+  // the other engine that are discussed in this engine's primary text.
+  // This gives an accurate overlap score even when engines use different
+  // vocabulary for the same topics.
   const pairwiseJaccards = [];
 
   for (let i = 0; i < activeEngines.length; i++) {
     for (let j = i + 1; j < activeEngines.length; j++) {
-      const topicsA = (activeEngines[i][1].topicsKnown || [])
-        .map(normaliseTopic).filter(t => t.length > 1);
-      const topicsB = (activeEngines[j][1].topicsKnown || [])
-        .map(normaliseTopic).filter(t => t.length > 1);
+      const [, dataI] = activeEngines[i];
+      const [, dataJ] = activeEngines[j];
 
-      if (topicsA.length === 0 && topicsB.length === 0) {
+      const rawTopicsI = (dataI.topicsKnown || []).map(normaliseTopic).filter(t => t.length > 1);
+      const rawTopicsJ = (dataJ.topicsKnown || []).map(normaliseTopic).filter(t => t.length > 1);
+
+      if (rawTopicsI.length === 0 && rawTopicsJ.length === 0) {
         pairwiseJaccards.push(0.5);
         continue;
       }
-      if (topicsA.length === 0 || topicsB.length === 0) {
+
+      if (rawTopicsI.length === 0 || rawTopicsJ.length === 0) {
         pairwiseJaccards.push(0.2);
         continue;
       }
 
-      const { matched } = findTopicOverlap(topicsA, topicsB);
-      const unionSize   = new Set([...topicsA, ...topicsB]).size;
-      const jaccard     = unionSize > 0 ? matched.length / unionSize : 0;
+      // Expand each engine's list with the other's topics found in primary text
+      const expandedI = expandTopicsWithPrimaryText(
+        rawTopicsI, rawTopicsJ, dataI.primaryText || ''
+      );
+      const expandedJ = expandTopicsWithPrimaryText(
+        rawTopicsJ, rawTopicsI, dataJ.primaryText || ''
+      );
+
+      // Compute Jaccard on the expanded lists
+      const { matched } = findTopicOverlap(expandedI, expandedJ);
+      const unionSize   = new Set([
+        ...expandedI.map(normaliseTopic),
+        ...expandedJ.map(normaliseTopic)
+      ]).size;
+
+      const jaccard = unionSize > 0 ? matched.length / unionSize : 0;
       pairwiseJaccards.push(jaccard);
+
+      logger.info(
+        `Topic overlap [pair ${i}-${j}]: ` +
+        `raw I=${rawTopicsI.length} expanded I=${expandedI.length} | ` +
+        `raw J=${rawTopicsJ.length} expanded J=${expandedJ.length} | ` +
+        `matched=${matched.length} union=${unionSize} jaccard=${jaccard.toFixed(3)}`
+      );
     }
   }
 
   const meanJaccard      = pairwiseJaccards.reduce((a, b) => a + b, 0) / pairwiseJaccards.length;
   const topicOverlapScore = clamp(meanJaccard * 100);
 
-  logger.info(`Consistency D1 — topic overlap: ${topicOverlapScore}`);
+  logger.info(`Consistency D1 — topic overlap: ${topicOverlapScore} (mean jaccard: ${meanJaccard.toFixed(3)})`);
 
   // ── Dimension 2: Sentiment Alignment ──
-  const sentiments         = activeEngines.map(([, d]) => d.sentiment || 'unknown');
-  const sentimentCompat    = meanPairwiseCompatibility(sentiments, SENTIMENT_COMPATIBILITY);
+  const sentiments          = activeEngines.map(([, d]) => d.sentiment || 'unknown');
+  const sentimentCompat     = meanPairwiseCompatibility(sentiments, SENTIMENT_COMPATIBILITY);
   const sentimentAlignScore = clamp(sentimentCompat * 100);
 
-  logger.info(`Consistency D2 — sentiment alignment: ${sentimentAlignScore}`);
+  logger.info(`Consistency D2 — sentiment alignment: ${sentimentAlignScore} (sentiments: [${sentiments.join(', ')}])`);
 
   // ── Dimension 3: Informal Alignment ──
   const informalScores     = activeEngines.map(([, d]) => d.informalScore || 5);
   const informalAlign      = informalScoreAlignment(informalScores);
   const informalAlignScore = clamp(informalAlign * 100);
 
-  logger.info(`Consistency D3 — informal alignment: ${informalAlignScore}`);
+  logger.info(`Consistency D3 — informal alignment: ${informalAlignScore} (scores: [${informalScores.join(', ')}])`);
 
   // ── Dimension 4: Recommendation Alignment ──
-  const recommendations  = activeEngines.map(([, d]) => d.recommended || 'unclear');
-  const recCompat        = meanPairwiseCompatibility(recommendations, RECOMMENDATION_COMPATIBILITY);
-  const recAlignScore    = clamp(recCompat * 100);
+  const recommendations = activeEngines.map(([, d]) => d.recommended || 'unclear');
+  const recCompat       = meanPairwiseCompatibility(recommendations, RECOMMENDATION_COMPATIBILITY);
+  const recAlignScore   = clamp(recCompat * 100);
 
-  logger.info(`Consistency D4 — recommendation alignment: ${recAlignScore}`);
+  logger.info(`Consistency D4 — recommendation alignment: ${recAlignScore} (recs: [${recommendations.join(', ')}])`);
 
   // ── Composite score ──
   const consistencyScore = clamp(
@@ -657,7 +855,7 @@ function analyseConsistency(scoredEngines) {
     `informal=${informalAlignScore} rec=${recAlignScore}`
   );
 
-  // ── Build agreed / conflicted / exclusive lists ──
+  // ── Build agreed / conflicted / exclusive ──
   const agreed    = buildAgreedTopics(scoredEngines);
   const conflicted = buildConflictedTopics(scoredEngines);
   const exclusive  = buildExclusiveTopics(scoredEngines);
@@ -689,6 +887,7 @@ module.exports = {
   buildConflictedTopics,
   buildExclusiveTopics,
   findTopicOverlap,
+  expandTopicsWithPrimaryText,
   isTopicDiscussedInText,
   jaccardSimilarity,
   informalScoreAlignment,
