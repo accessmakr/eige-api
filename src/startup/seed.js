@@ -12,6 +12,15 @@
 //   tech_intelligence    — 25 technology knowledge base profiles
 //   architecture_patterns — 10 architecture combination profiles
 //   industry_benchmarks  — 11 industry benchmark profiles
+//
+// PATTERN DESIGN PRINCIPLE — ALL HTML PATTERNS MUST BE TECHNICAL ARTIFACTS:
+// Every html_pattern must match something that ONLY EXISTS when a technology
+// is actually running — file paths, JavaScript variable names, specific
+// data attributes, cookie names, or unique string tokens.
+// NEVER use the technology's own name as a bare word HTML pattern.
+// A page that TALKS ABOUT WordPress does not RUN WordPress.
+// A page that MENTIONS Cloudflare is not BEHIND Cloudflare.
+// Cloudflare, hosting, and CDN detection must come from HTTP headers only.
 
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
@@ -22,7 +31,10 @@ const PATTERNS = [
   {
     name: 'React',
     category: 'JavaScript Framework',
-    html_patterns: ['__NEXT_DATA__','data-reactroot','data-reactid','react-root','_reactFiber','ReactDOM','__react_','react-app','__REACT_DEVTOOLS_GLOBAL_HOOK__','react-dom'],
+    // Technical artifacts: runtime global, data attributes injected by React's
+    // reconciler, server-side render markers. None of these appear on pages
+    // that merely mention React.
+    html_patterns: ['__NEXT_DATA__','data-reactroot','data-reactid','_reactFiber','ReactDOM','__react_','__REACT_DEVTOOLS_GLOBAL_HOOK__','react-dom'],
     header_patterns: ['x-powered-by: react','x-nextjs'],
     script_patterns: ['react\\.min\\.js','react\\.production\\.min\\.js','react-dom','\\/react@','unpkg\\.com/react','cdn\\.jsdelivr\\.net/npm/react','react\\.development\\.js'],
     url_patterns: [],
@@ -32,6 +44,9 @@ const PATTERNS = [
   {
     name: 'Next.js',
     category: 'JavaScript Framework',
+    // __NEXT_DATA__ is injected into every Next.js page as a JSON script tag.
+    // _next/static is the build output directory path. These only exist on
+    // actual Next.js deployments.
     html_patterns: ['__NEXT_DATA__','__NEXT_LOADED_PAGES__','_next/static','_next/chunks','__nextjs','next/dist','__NEXT_P','next-route-announcer','__NEXT_ROUTER_BASEPATH'],
     header_patterns: ['x-powered-by: next\\.js','x-nextjs-cache','x-nextjs-page','x-next-cache'],
     script_patterns: ['_next/static/chunks','_next/static/runtime','next/dist/client'],
@@ -42,7 +57,10 @@ const PATTERNS = [
   {
     name: 'Vue.js',
     category: 'JavaScript Framework',
-    html_patterns: ['data-v-','__vue__','vue-router','__VUE__','v-cloak','nuxt-link','__NUXT__','vue\\.runtime','__VUE_OPTIONS_API__','__VUE_PROD_DEVTOOLS__'],
+    // data-v- is the scoped CSS attribute injected by Vue's SFC compiler.
+    // __vue__ and __VUE__ are runtime globals. v-cloak is a directive
+    // that only appears in actual Vue templates.
+    html_patterns: ['data-v-','__vue__','__VUE__','v-cloak','__NUXT__','__VUE_OPTIONS_API__','__VUE_PROD_DEVTOOLS__'],
     header_patterns: ['x-powered-by: nuxt'],
     script_patterns: ['vue\\.min\\.js','vue\\.runtime\\.min\\.js','\\/vue@','cdn\\.jsdelivr\\.net/npm/vue','unpkg\\.com/vue','vue\\.global\\.prod\\.js'],
     url_patterns: [],
@@ -52,9 +70,12 @@ const PATTERNS = [
   {
     name: 'Angular',
     category: 'JavaScript Framework',
-    html_patterns: ['ng-version','ng-app','ng-controller','ng-model','ng-repeat','_nghost','_ngcontent','ng-if','ng-class','angular\\.js','angular\\.min\\.js','ng-reflect-','ng-star-inserted'],
+    // ng-version is an attribute Angular adds to the root element.
+    // _nghost and _ngcontent are Angular's view encapsulation attributes.
+    // ng-star-inserted is added by ngIf/ngFor directives.
+    html_patterns: ['ng-version','_nghost','_ngcontent','ng-reflect-','ng-star-inserted'],
     header_patterns: [],
-    script_patterns: ['angular\\.min\\.js','angular\\.js','\\/angular@','zone\\.js','main\\.js','polyfills\\.js','runtime\\.js'],
+    script_patterns: ['angular\\.min\\.js','angular\\.js','\\/angular@','zone\\.js'],
     url_patterns: [],
     version_patterns: ['ng-version=\"([\\d.]+)\"','angular@([\\d.]+)','\"@angular/core\":\"([\\d.]+)\"'],
     html_weight: 0.45, header_weight: 0.20, script_weight: 0.35, min_confidence: 0.40
@@ -62,6 +83,8 @@ const PATTERNS = [
   {
     name: 'Svelte',
     category: 'JavaScript Framework',
+    // svelte- prefix on element attributes, __svelte runtime global,
+    // svelte-kit and _app/immutable are SvelteKit build output paths.
     html_patterns: ['svelte-','__svelte','svelte/internal','SvelteComponent','svelte-kit','data-svelte-h','svelte-announcer'],
     header_patterns: [],
     script_patterns: ['svelte\\.js','svelte/internal','\\/svelte@','_app/immutable','svelte-kit'],
@@ -72,7 +95,10 @@ const PATTERNS = [
   {
     name: 'Nuxt.js',
     category: 'JavaScript Framework',
-    html_patterns: ['__NUXT__','nuxt-link','nuxtjs','_nuxt/','nuxt/dist','__nuxt','nuxt-island','__NUXT_DATA__'],
+    // __NUXT__ is the server-side data serialisation global injected by Nuxt.
+    // nuxt-link is a component rendered as <a> with Nuxt-specific attributes.
+    // _nuxt/ is the build output directory path.
+    html_patterns: ['__NUXT__','nuxt-link','_nuxt/','nuxt/dist','__nuxt','nuxt-island','__NUXT_DATA__'],
     header_patterns: ['x-powered-by: nuxt'],
     script_patterns: ['_nuxt/runtime','_nuxt/entry','nuxt/dist/app','_nuxt/builds'],
     url_patterns: ['_nuxt/'],
@@ -82,6 +108,8 @@ const PATTERNS = [
   {
     name: 'Astro',
     category: 'JavaScript Framework',
+    // astro-island and astro-slot are Astro's island architecture HTML elements.
+    // data-astro- attributes are added by Astro's component compiler.
     html_patterns: ['astro-island','astro-slot','data-astro-','astro:load','astro:idle','astro:visible','astro:only','astro:media'],
     header_patterns: ['x-powered-by: astro'],
     script_patterns: ['\\/astro\\/','astro/client','@astrojs'],
@@ -92,6 +120,8 @@ const PATTERNS = [
   {
     name: 'Remix',
     category: 'JavaScript Framework',
+    // __remixContext is the server-side data hydration global.
+    // __remixManifest contains the route/asset manifest.
     html_patterns: ['__remixContext','__remixRouteModules','__remixManifest','data-remix-','remix-island','__remix_island'],
     header_patterns: [],
     script_patterns: ['\\/build\\/root-','entry\\.client','@remix-run','remix\\.config'],
@@ -102,7 +132,11 @@ const PATTERNS = [
   {
     name: 'jQuery',
     category: 'JavaScript Library',
-    html_patterns: ['jquery','\\$\\.fn\\.jquery','jQuery\\.fn\\.jquery','jQuery\\(','\\$(document)\\.ready'],
+    // $.fn.jquery is the jQuery version property accessed on the prototype.
+    // jQuery.fn.jquery is the same via the full name.
+    // $(document).ready is the jQuery DOMReady pattern.
+    // Removed bare 'jquery' — any page mentioning jQuery would match.
+    html_patterns: ['\\$\\.fn\\.jquery','jQuery\\.fn\\.jquery','jQuery\\(','\\$(document)\\.ready'],
     header_patterns: [],
     script_patterns: ['jquery\\.min\\.js','jquery\\.js','jquery-[\\d.]+\\.min\\.js','code\\.jquery\\.com','ajax\\.googleapis\\.com/ajax/libs/jquery'],
     url_patterns: [],
@@ -112,7 +146,11 @@ const PATTERNS = [
   {
     name: 'Alpine.js',
     category: 'JavaScript Framework',
-    html_patterns: ['x-data','x-bind','x-on:','x-show','x-if','x-for','x-model','x-text','x-html','x-ref','x-cloak','alpine'],
+    // x-data, x-bind, x-on: etc. are Alpine.js directive attributes.
+    // These are HTML attributes unique to Alpine — they do not appear on
+    // pages that merely mention Alpine.js.
+    // Removed bare 'alpine' — matches any text mentioning alpine.
+    html_patterns: ['x-data','x-bind','x-on:','x-show','x-if','x-for','x-model','x-text','x-html','x-ref','x-cloak'],
     header_patterns: [],
     script_patterns: ['alpinejs','alpine\\.js','cdn\\.jsdelivr\\.net/npm/alpinejs','unpkg\\.com/alpinejs'],
     url_patterns: [],
@@ -122,7 +160,12 @@ const PATTERNS = [
   {
     name: 'WordPress',
     category: 'CMS',
-    html_patterns: ['wp-content','wp-includes','wp-json','wp-block','wordpress','wp-embed','wp-emoji','xmlrpc\\.php','wp-login\\.php','woocommerce','wp-settings','wp-admin'],
+    // All patterns are file paths or query parameters that only exist on
+    // actual WordPress installations. wp-content, wp-includes, wp-json are
+    // the WordPress directory structure. xmlrpc.php and wp-login.php are
+    // WordPress-specific files.
+    // REMOVED: bare 'wordpress' — any page that mentions WordPress matches.
+    html_patterns: ['wp-content','wp-includes','wp-json','wp-block','wp-embed','wp-emoji','xmlrpc\\.php','wp-login\\.php','woocommerce','wp-settings','wp-admin'],
     header_patterns: ['x-powered-by: wp','x-pingback','link:.*wp-json'],
     script_patterns: ['wp-includes/js','wp-content/themes','wp-content/plugins','wp-emoji-release\\.min\\.js'],
     url_patterns: ['wp-admin','wp-login'],
@@ -132,6 +175,9 @@ const PATTERNS = [
   {
     name: 'Shopify',
     category: 'E-Commerce',
+    // Shopify.theme is the global object injected into every Shopify storefront.
+    // cdn.shopify.com and myshopify.com are Shopify-controlled domains.
+    // shopify-section is the data attribute added to every Shopify section.
     html_patterns: ['Shopify\\.theme','cdn\\.shopify\\.com','myshopify\\.com','shopify-section','shopify_analytics','Shopify\\.shop','shopify\\.com/s/files','ShopifyAnalytics','Shopify\\.currency'],
     header_patterns: ['x-shopify-stage','x-shopid','x-shardid'],
     script_patterns: ['cdn\\.shopify\\.com/s/files','shopify\\.com/s/trekkie'],
@@ -142,7 +188,11 @@ const PATTERNS = [
   {
     name: 'WooCommerce',
     category: 'E-Commerce',
-    html_patterns: ['woocommerce','wc-','data-product_id','wc_add_to_cart','is-woocommerce','woocommerce-cart','woocommerce-checkout','woocommerce-page','wc_cart_fragments_params'],
+    // woocommerce class is added to the body of WooCommerce pages.
+    // data-product_id and wc_add_to_cart are WooCommerce-specific.
+    // REMOVED: 'wc-' prefix — matches any class containing wc- which is
+    // extremely common in custom CSS (e.g. class="wc-container" "wc-header").
+    html_patterns: ['woocommerce','data-product_id','wc_add_to_cart','is-woocommerce','woocommerce-cart','woocommerce-checkout','woocommerce-page','wc_cart_fragments_params'],
     header_patterns: [],
     script_patterns: ['woocommerce/assets','wc-add-to-cart','woocommerce\\.min\\.js','wc-cart-fragments'],
     url_patterns: ['/shop/','/cart/','/checkout/','/product/'],
@@ -152,7 +202,12 @@ const PATTERNS = [
   {
     name: 'Cloudflare',
     category: 'CDN',
-    html_patterns: ['cloudflare','__cf_bm','cf-challenge','cloudflare-static','cf_clearance','cloudflare-turnstile'],
+    // __cf_bm, cf-challenge, cloudflare-static, cf_clearance are Cloudflare
+    // runtime tokens injected into pages served through Cloudflare.
+    // cloudflare-turnstile is the CAPTCHA widget class.
+    // REMOVED: bare 'cloudflare' — any page mentioning Cloudflare matches.
+    // All reliable Cloudflare signals come from HTTP headers.
+    html_patterns: ['__cf_bm','cf-challenge','cloudflare-static','cf_clearance','cloudflare-turnstile'],
     header_patterns: ['cf-ray','cf-cache-status','server: cloudflare','cf-request-id','cf-apo-via','cf-edge-cache'],
     script_patterns: ['cloudflare\\.com/cdn-cgi','static\\.cloudflareinsights\\.com','cdn-cgi/scripts','challenges\\.cloudflare\\.com'],
     url_patterns: [],
@@ -162,6 +217,8 @@ const PATTERNS = [
   {
     name: 'AWS CloudFront',
     category: 'CDN',
+    // CloudFront is detected exclusively via its response headers.
+    // x-amz-cf-id is the CloudFront request ID header.
     html_patterns: [],
     header_patterns: ['x-amz-cf-id','x-amz-cf-pop','via:.*cloudfront','x-cache:.*cloudfront'],
     script_patterns: ['cloudfront\\.net'],
@@ -172,7 +229,9 @@ const PATTERNS = [
   {
     name: 'Vercel',
     category: 'Hosting',
-    html_patterns: ['vercel\\.app','vercel\\.com'],
+    // Vercel is detected primarily via its response headers.
+    // x-vercel-id is unique to Vercel infrastructure.
+    html_patterns: [],
     header_patterns: ['x-vercel-id','x-vercel-cache','server: vercel','x-vercel-deployment-url','x-vercel-ip-country'],
     script_patterns: [],
     url_patterns: ['\\.vercel\\.app'],
@@ -182,7 +241,11 @@ const PATTERNS = [
   {
     name: 'Netlify',
     category: 'Hosting',
-    html_patterns: ['netlify','data-netlify','netlify-identity'],
+    // Netlify is detected primarily via its response headers.
+    // data-netlify is the attribute on forms processed by Netlify Forms.
+    // netlify-identity is the identity widget container div.
+    // REMOVED: bare 'netlify' — any page that mentions Netlify matches.
+    html_patterns: ['data-netlify','netlify-identity'],
     header_patterns: ['x-nf-request-id','server: netlify','x-netlify-cache','netlify-cdn-cache-control','netlify-vary'],
     script_patterns: ['netlify-identity-widget'],
     url_patterns: ['\\.netlify\\.app','\\.netlify\\.com'],
@@ -192,7 +255,12 @@ const PATTERNS = [
   {
     name: 'Tailwind CSS',
     category: 'CSS Framework',
-    html_patterns: ['tailwindcss','tw-','tailwind\\.config'],
+    // tailwindcss and tailwind.config are specific to the Tailwind build pipeline.
+    // The CDN script src is specific to the Tailwind CDN.
+    // REMOVED: 'tw-' — used as a prefix in many CSS frameworks and custom code.
+    // Removed generic class patterns like flex, grid, text-, bg- which appear
+    // in any CSS framework or custom stylesheet.
+    html_patterns: ['tailwindcss','tailwind\\.config'],
     header_patterns: [],
     script_patterns: ['tailwindcss','cdn\\.tailwindcss\\.com'],
     url_patterns: [],
@@ -202,7 +270,14 @@ const PATTERNS = [
   {
     name: 'Bootstrap',
     category: 'CSS Framework',
-    html_patterns: ['bootstrap','data-bs-','data-toggle=','data-dismiss='],
+    // data-bs-* attributes are Bootstrap 5 specific data attributes.
+    // data-toggle and data-dismiss are Bootstrap 4 specific.
+    // Bootstrap CDN script URLs are definitive proof.
+    // REMOVED: bare 'bootstrap' — any page mentioning Bootstrap matches.
+    // REMOVED: class-based patterns like container, row, col-, btn, navbar,
+    // modal — these are CSS class names used by virtually every CSS framework
+    // and custom stylesheet in existence.
+    html_patterns: ['data-bs-toggle','data-bs-dismiss','data-bs-target','data-bs-content','data-toggle=\"modal\"','data-toggle=\"dropdown\"','data-dismiss=\"modal\"'],
     header_patterns: [],
     script_patterns: ['bootstrap\\.min\\.js','bootstrap\\.bundle\\.min\\.js','getbootstrap\\.com','cdn\\.jsdelivr\\.net/npm/bootstrap'],
     url_patterns: [],
@@ -212,7 +287,13 @@ const PATTERNS = [
   {
     name: 'Google Analytics',
     category: 'Analytics',
-    html_patterns: ['google-analytics\\.com/analytics\\.js','GoogleAnalyticsObject','gtag\\(','UA-[0-9]+-[0-9]+','G-[A-Z0-9]+'],
+    // google-analytics.com/analytics.js is the GA3 script URL.
+    // GoogleAnalyticsObject is the UA variable name injected into the window.
+    // gtag( is the GA4 function call syntax in an inline script.
+    // UA-XXXXX-X is the Universal Analytics property ID format.
+    // REMOVED: 'G-[A-Z0-9]+' — matches any string starting with G- followed
+    // by alphanumerics (e.g. G-DRIVE, G-FORCE, G-SUITE appearing in page text).
+    html_patterns: ['google-analytics\\.com/analytics\\.js','GoogleAnalyticsObject','gtag\\(','UA-[0-9]+-[0-9]+'],
     header_patterns: [],
     script_patterns: ['google-analytics\\.com/analytics\\.js','googletagmanager\\.com/gtag/js','google-analytics\\.com/ga\\.js'],
     url_patterns: [],
@@ -222,7 +303,10 @@ const PATTERNS = [
   {
     name: 'Google Tag Manager',
     category: 'Tag Manager',
-    html_patterns: ['GTM-[A-Z0-9]+','googletagmanager\\.com','dataLayer\\.push','gtm\\.js'],
+    // GTM-XXXXX is the GTM container ID format injected into the page.
+    // googletagmanager.com is the GTM domain in the noscript fallback.
+    // dataLayer.push is the GTM data layer API call.
+    html_patterns: ['GTM-[A-Z0-9]+','googletagmanager\\.com','dataLayer\\.push','dataLayer = \\[\\]'],
     header_patterns: [],
     script_patterns: ['googletagmanager\\.com/gtm\\.js','googletagmanager\\.com/ns\\.html'],
     url_patterns: [],
@@ -232,7 +316,10 @@ const PATTERNS = [
   {
     name: 'Stripe',
     category: 'Payment',
-    html_patterns: ['stripe\\.createToken','stripe\\.redirectToCheckout','data-stripe','StripeElement','stripe-js','__stripe_mid','__stripe_sid'],
+    // stripe.createToken and stripe.redirectToCheckout are Stripe JS API calls.
+    // StripeElement is the CSS class added to Stripe-hosted input elements.
+    // __stripe_mid and __stripe_sid are Stripe measurement cookies.
+    html_patterns: ['stripe\\.createToken','stripe\\.redirectToCheckout','StripeElement','__stripe_mid','__stripe_sid'],
     header_patterns: [],
     script_patterns: ['js\\.stripe\\.com/v3','js\\.stripe\\.com/v2'],
     url_patterns: [],
@@ -242,7 +329,11 @@ const PATTERNS = [
   {
     name: 'Sentry',
     category: 'Monitoring',
-    html_patterns: ['Sentry\\.init','sentry\\.io','__sentry','sentry-trace'],
+    // Sentry.init is the SDK initialisation call.
+    // __sentry is the Sentry SDK global namespace.
+    // sentry-trace is the distributed tracing meta tag Sentry injects.
+    // REMOVED: 'sentry.io' — any page linking to sentry.io matches.
+    html_patterns: ['Sentry\\.init','__sentry','sentry-trace'],
     header_patterns: ['sentry-trace','baggage:.*sentry'],
     script_patterns: ['browser\\.sentry-cdn\\.com','js\\.sentry-cdn\\.com','@sentry/browser'],
     url_patterns: [],
@@ -252,6 +343,9 @@ const PATTERNS = [
   {
     name: 'Intercom',
     category: 'Customer Support',
+    // intercomSettings is the configuration object injected into the window.
+    // Intercom( is the API call function.
+    // intercom-container and intercom-launcher are injected DOM elements.
     html_patterns: ['intercomSettings','Intercom\\(','intercom-container','intercom-launcher','widget\\.intercom\\.io'],
     header_patterns: [],
     script_patterns: ['widget\\.intercom\\.io/widget','js\\.intercomcdn\\.com'],
@@ -262,7 +356,13 @@ const PATTERNS = [
   {
     name: 'HubSpot',
     category: 'Marketing',
-    html_patterns: ['hubspot','hs-script-loader','hbspt\\.forms\\.create','_hsq\\.push','leadin','hs-form'],
+    // hs-script-loader is the class on HubSpot's script tag.
+    // hbspt.forms.create is the HubSpot forms API call.
+    // _hsq.push is the HubSpot tracking API call.
+    // leadin is HubSpot's legacy tracking script identifier.
+    // hs-form is the class added to HubSpot embedded forms.
+    // REMOVED: bare 'hubspot' — any page mentioning HubSpot matches.
+    html_patterns: ['hs-script-loader','hbspt\\.forms\\.create','_hsq\\.push','leadin','hs-form'],
     header_patterns: ['x-hs-cf-stack'],
     script_patterns: ['js\\.hs-scripts\\.com','js\\.hsforms\\.net','js\\.hubspot\\.com'],
     url_patterns: ['\\.hubspot\\.com','\\.hs-sites\\.com'],
@@ -272,7 +372,11 @@ const PATTERNS = [
   {
     name: 'Hotjar',
     category: 'Analytics',
-    html_patterns: ['hotjar','hjSetting','_hjSettings','hj\\(','hjid:','_hjTLDTest'],
+    // hjSetting and _hjSettings are the Hotjar configuration objects.
+    // _hjTLDTest is a cookie Hotjar uses to detect the top-level domain.
+    // hjid: is the Hotjar site ID property injected in the initialisation.
+    // REMOVED: bare 'hotjar' — any page mentioning Hotjar matches.
+    html_patterns: ['hjSetting','_hjSettings','hjid:','_hjTLDTest'],
     header_patterns: [],
     script_patterns: ['static\\.hotjar\\.com','script\\.hotjar\\.com'],
     url_patterns: [],
@@ -282,7 +386,10 @@ const PATTERNS = [
   {
     name: 'Firebase',
     category: 'Database',
-    html_patterns: ['firebase','__FIREBASE_DEFAULTS__','firebaseapp\\.com'],
+    // __FIREBASE_DEFAULTS__ is the Firebase SDK configuration global.
+    // firebaseapp.com is the Firebase Hosting domain — domain-specific.
+    // REMOVED: bare 'firebase' — any page mentioning Firebase matches.
+    html_patterns: ['__FIREBASE_DEFAULTS__','firebaseapp\\.com'],
     header_patterns: [],
     script_patterns: ['firebase\\.googleapis\\.com','firebasestorage\\.googleapis\\.com','www\\.gstatic\\.com/firebasejs'],
     url_patterns: ['\\.firebaseapp\\.com','\\.web\\.app'],
@@ -292,7 +399,9 @@ const PATTERNS = [
   {
     name: 'Supabase',
     category: 'Database',
-    html_patterns: ['supabase','supabase\\.co'],
+    // supabase.co is the Supabase platform domain — domain-specific.
+    // REMOVED: bare 'supabase' — any page mentioning Supabase matches.
+    html_patterns: ['supabase\\.co'],
     header_patterns: [],
     script_patterns: ['@supabase/supabase-js','supabase\\.co/storage'],
     url_patterns: ['\\.supabase\\.co'],
@@ -302,7 +411,10 @@ const PATTERNS = [
   {
     name: 'Paystack',
     category: 'Payment',
-    html_patterns: ['PaystackPop','paystack','paystack-button'],
+    // PaystackPop is the Paystack Popup API object.
+    // paystack-button is the class Paystack adds to payment buttons.
+    // REMOVED: bare 'paystack' — any page mentioning Paystack matches.
+    html_patterns: ['PaystackPop','paystack-button'],
     header_patterns: [],
     script_patterns: ['js\\.paystack\\.co','checkout\\.paystack\\.com'],
     url_patterns: [],
@@ -312,7 +424,10 @@ const PATTERNS = [
   {
     name: 'Flutterwave',
     category: 'Payment',
-    html_patterns: ['FlutterwaveCheckout','flutterwave','rave-payment-button'],
+    // FlutterwaveCheckout is the Flutterwave inline checkout function.
+    // rave-payment-button is the class Flutterwave adds to payment buttons.
+    // REMOVED: bare 'flutterwave' — any page mentioning Flutterwave matches.
+    html_patterns: ['FlutterwaveCheckout','rave-payment-button'],
     header_patterns: [],
     script_patterns: ['checkout\\.flutterwave\\.com','ravepay\\.co'],
     url_patterns: [],
@@ -322,6 +437,8 @@ const PATTERNS = [
   {
     name: 'Google Fonts',
     category: 'Font',
+    // fonts.googleapis.com and fonts.gstatic.com are the Google Fonts CDN domains.
+    // These only appear when Google Fonts is actually loaded.
     html_patterns: ['fonts\\.googleapis\\.com','fonts\\.gstatic\\.com'],
     header_patterns: [],
     script_patterns: [],
@@ -332,7 +449,12 @@ const PATTERNS = [
   {
     name: 'reCAPTCHA',
     category: 'Security',
-    html_patterns: ['g-recaptcha','recaptcha','grecaptcha','data-sitekey'],
+    // g-recaptcha is the class Google adds to the reCAPTCHA widget container.
+    // grecaptcha is the global API object injected by the reCAPTCHA script.
+    // REMOVED: bare 'recaptcha' — any page mentioning reCAPTCHA matches.
+    // REMOVED: 'data-sitekey' — this attribute is used by hCaptcha, Turnstile,
+    // and other CAPTCHA providers. Not specific to reCAPTCHA.
+    html_patterns: ['g-recaptcha','grecaptcha'],
     header_patterns: [],
     script_patterns: ['google\\.com/recaptcha/api\\.js','www\\.google\\.com/recaptcha'],
     url_patterns: [],
@@ -342,6 +464,7 @@ const PATTERNS = [
   {
     name: 'Nginx',
     category: 'Web Server',
+    // Nginx is detected exclusively via the Server HTTP response header.
     html_patterns: [],
     header_patterns: ['server: nginx','server: openresty'],
     script_patterns: [],
@@ -352,6 +475,7 @@ const PATTERNS = [
   {
     name: 'PHP',
     category: 'Programming Language',
+    // PHP is detected via the X-Powered-By header and PHPSESSID cookie.
     html_patterns: [],
     header_patterns: ['x-powered-by: php','set-cookie:.*phpsessid'],
     script_patterns: [],
@@ -362,7 +486,11 @@ const PATTERNS = [
   {
     name: 'Django',
     category: 'Programming Language',
-    html_patterns: ['csrfmiddlewaretoken','django','__admin_media_prefix__'],
+    // csrfmiddlewaretoken is the name Django gives its CSRF hidden form field.
+    // __admin_media_prefix__ is a Django admin template variable.
+    // Both are unique Django artifacts — no other framework uses these names.
+    // REMOVED: bare 'django' — any page mentioning Django matches.
+    html_patterns: ['csrfmiddlewaretoken','__admin_media_prefix__'],
     header_patterns: ['set-cookie:.*csrftoken','set-cookie:.*sessionid'],
     script_patterns: [],
     url_patterns: ['/admin/','/static/'],
@@ -372,9 +500,13 @@ const PATTERNS = [
   {
     name: 'Laravel',
     category: 'Programming Language',
-    html_patterns: ['laravel','csrf-token','laravel_session'],
+    // laravel_session is the Laravel session cookie name.
+    // The meta name="csrf-token" is used by Laravel's Blade templates.
+    // set-cookie:.*laravel_session is the definitive Laravel session cookie.
+    // REMOVED: bare 'laravel' — any page mentioning Laravel matches.
+    html_patterns: ['laravel_session'],
     header_patterns: ['set-cookie:.*laravel_session','set-cookie:.*xsrf-token'],
-    script_patterns: ['laravel\\.js','app\\.js'],
+    script_patterns: ['laravel\\.js'],
     url_patterns: [],
     version_patterns: [],
     html_weight: 0.40, header_weight: 0.40, script_weight: 0.20, min_confidence: 0.35
@@ -382,6 +514,10 @@ const PATTERNS = [
   {
     name: 'Facebook Pixel',
     category: 'Marketing',
+    // fbq( is the Facebook Pixel event tracking API call.
+    // facebook-jssdk is the ID of the Facebook SDK script element.
+    // _fbq is the legacy Facebook Pixel object.
+    // fbevents.js is the Facebook Pixel script filename.
     html_patterns: ['fbq\\(','facebook-jssdk','connect\\.facebook\\.net','_fbq','fbevents\\.js'],
     header_patterns: [],
     script_patterns: ['connect\\.facebook\\.net/en_US/fbevents','connect\\.facebook\\.net/signals'],
@@ -392,6 +528,7 @@ const PATTERNS = [
   {
     name: 'AWS',
     category: 'Hosting',
+    // AWS is detected exclusively via HTTP response headers.
     html_patterns: [],
     header_patterns: ['x-amzn-requestid','x-amz-request-id','server: awselb','x-amzn-trace-id'],
     script_patterns: ['s3\\.amazonaws\\.com','\\.s3\\.amazonaws\\.com'],
@@ -402,7 +539,12 @@ const PATTERNS = [
   {
     name: 'Google Maps',
     category: 'Map',
-    html_patterns: ['maps\\.googleapis\\.com','google-map','gm-style','GoogleMap'],
+    // maps.googleapis.com is the Google Maps API domain.
+    // gm-style is the CSS class Google Maps injects into its container div.
+    // GoogleMap is the React Google Maps component class name.
+    // REMOVED: 'google-map' — any element with class/id containing google-map
+    // would match, including class="my-google-map-wrapper".
+    html_patterns: ['maps\\.googleapis\\.com','gm-style','GoogleMap'],
     header_patterns: [],
     script_patterns: ['maps\\.googleapis\\.com/maps/api','maps\\.google\\.com/maps'],
     url_patterns: [],
@@ -412,6 +554,9 @@ const PATTERNS = [
   {
     name: 'YouTube',
     category: 'Video',
+    // youtube.com/embed is the YouTube iframe embed URL pattern.
+    // ytInitialData is the YouTube player data global.
+    // yt-player is the YouTube iframe player class.
     html_patterns: ['youtube\\.com/embed','youtu\\.be','ytInitialData','yt-player'],
     header_patterns: [],
     script_patterns: ['youtube\\.com/iframe_api','www\\.youtube\\.com/s/player'],
@@ -422,7 +567,12 @@ const PATTERNS = [
   {
     name: 'Algolia',
     category: 'Search',
-    html_patterns: ['algolia','ais-','InstantSearch','algoliasearch'],
+    // ais- is the Algolia InstantSearch CSS class prefix — all InstantSearch
+    // components use this prefix exclusively.
+    // algoliasearch is the Algolia search client library name in scripts.
+    // REMOVED: bare 'algolia' — any page mentioning Algolia matches.
+    // REMOVED: 'InstantSearch' — could appear in documentation or text.
+    html_patterns: ['ais-','algoliasearch'],
     header_patterns: [],
     script_patterns: ['cdn\\.jsdelivr\\.net/npm/algoliasearch','cdn\\.jsdelivr\\.net/npm/instantsearch','algoliasearch\\.min\\.js'],
     url_patterns: [],
@@ -432,7 +582,15 @@ const PATTERNS = [
   {
     name: 'Webflow',
     category: 'CMS',
-    html_patterns: ['data-wf-','webflow','w-webflow-badge','wf-form-','data-w-id','webflow-badge','wf-'],
+    // data-wf- attributes are injected by Webflow into every element it manages.
+    // w-webflow-badge is the Webflow badge added to free plans.
+    // wf-form- is the class Webflow adds to form elements.
+    // data-w-id is the unique element identifier Webflow uses.
+    // webflow-badge is the badge container class.
+    // REMOVED: bare 'webflow' — any page mentioning Webflow matches.
+    // REMOVED: 'wf-' — this two-character prefix appears in countless
+    // custom CSS frameworks and class naming conventions.
+    html_patterns: ['data-wf-','w-webflow-badge','wf-form-','data-w-id','webflow-badge'],
     header_patterns: ['x-powered-by: webflow'],
     script_patterns: ['assets\\.website-files\\.com','webflow\\.js','d3e54v103j8qbb\\.cloudfront\\.net'],
     url_patterns: ['\\.webflow\\.io'],
@@ -442,6 +600,9 @@ const PATTERNS = [
   {
     name: 'Segment',
     category: 'Analytics',
+    // analytics.load(, analytics.page(, analytics.track(, analytics.identify(
+    // are Segment's analytics.js API calls. These are specific to Segment's
+    // JavaScript SDK interface.
     html_patterns: ['analytics\\.load\\(','analytics\\.page\\(','analytics\\.track\\(','analytics\\.identify\\(','cdn\\.segment\\.com'],
     header_patterns: [],
     script_patterns: ['cdn\\.segment\\.com/analytics\\.js','cdn\\.segment\\.io'],
@@ -452,6 +613,10 @@ const PATTERNS = [
   {
     name: 'Drupal',
     category: 'CMS',
+    // Drupal.settings and Drupal.behaviors are the Drupal JS API objects.
+    // drupal- is the CSS class prefix Drupal uses for its own elements.
+    // data-drupal- are Drupal-specific data attributes.
+    // /sites/default/files is the Drupal default file storage path.
     html_patterns: ['Drupal\\.settings','drupal\\.js','drupal-','data-drupal-','/sites/default/files','drupal/core','Drupal\\.behaviors','drupalSettings','data-drupal-link'],
     header_patterns: ['x-drupal-cache','x-generator: drupal','x-drupal-dynamic-cache'],
     script_patterns: ['/core/misc/drupal','drupal\\.min\\.js','/sites/all/modules','/core/assets/vendor'],
@@ -462,6 +627,7 @@ const PATTERNS = [
   {
     name: 'Fastly',
     category: 'CDN',
+    // Fastly is detected exclusively via HTTP response headers.
     html_patterns: [],
     header_patterns: ['x-fastly-request-id','x-served-by:.*cache-','fastly-restarts','x-cache:.*HIT','x-timer:.*S','via:.*varnish'],
     script_patterns: [],
@@ -472,7 +638,9 @@ const PATTERNS = [
   {
     name: 'PayPal',
     category: 'Payment',
-    html_patterns: ['paypal\\.Buttons','paypal-button','paypal\\.com/sdk'],
+    // paypal.Buttons is the PayPal JS SDK API call.
+    // paypal.com/sdk is the PayPal SDK script URL in HTML.
+    html_patterns: ['paypal\\.Buttons','paypal\\.com/sdk'],
     header_patterns: [],
     script_patterns: ['paypal\\.com/sdk/js','paypalobjects\\.com'],
     url_patterns: [],
@@ -482,7 +650,12 @@ const PATTERNS = [
   {
     name: 'Zendesk',
     category: 'Customer Support',
-    html_patterns: ['zE\\(','zEmbed','zendesk','zd-','zdSettings'],
+    // zE( is the Zendesk Web Widget API call function.
+    // zEmbed is the Zendesk embed script container ID.
+    // zdSettings is the Zendesk configuration object.
+    // REMOVED: bare 'zendesk' — any page mentioning Zendesk matches.
+    // REMOVED: 'zd-' — two character prefix too short and generic.
+    html_patterns: ['zE\\(','zEmbed','zdSettings'],
     header_patterns: [],
     script_patterns: ['static\\.zdassets\\.com','ekr\\.zdassets\\.com','v2\\.zopim\\.com'],
     url_patterns: ['\\.zendesk\\.com'],
