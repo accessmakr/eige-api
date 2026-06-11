@@ -185,6 +185,85 @@ function classifyArchitecture(technologies) {
       return { id: rule.id, name: rule.name, description: rule.description };
     }
   }
+  // No architecture rule matched. Rather than returning the unhelpful
+  // "Unknown Architecture" label, derive a meaningful name from the
+  // highest-confidence detected technology. This handles sites like Stripe
+  // which run Next.js without Vercel/Netlify/Cloudflare (so jamstack_ssr
+  // rule fails) but are clearly a Next.js application.
+  const sortedByConf = [...technologies].sort((a, b) => b.confidence - a.confidence);
+  for (const tech of sortedByConf) {
+    if (['Next.js', 'Nuxt.js', 'Remix', 'SvelteKit'].includes(tech.name)) {
+      return {
+        id: 'ssr_framework',
+        name: `${tech.name} Application`,
+        description: `Server-rendered application built with ${tech.name}`
+      };
+    }
+    if (tech.name === 'Astro') {
+      return {
+        id: 'jamstack_static',
+        name: 'Astro Static Site',
+        description: 'Content-focused static site built with Astro island architecture'
+      };
+    }
+    if (['React', 'Vue.js', 'Angular', 'Svelte'].includes(tech.name)) {
+      return {
+        id: 'spa_framework',
+        name: `${tech.name} Application`,
+        description: `Single page application built with ${tech.name}`
+      };
+    }
+    if (tech.name === 'WordPress') {
+      return {
+        id: 'wordpress_cms',
+        name: 'WordPress CMS',
+        description: 'Standard WordPress content management system'
+      };
+    }
+    if (tech.name === 'Shopify') {
+      return {
+        id: 'shopify_commerce',
+        name: 'Shopify Commerce',
+        description: 'Shopify-powered e-commerce platform'
+      };
+    }
+    if (['Drupal', 'Joomla'].includes(tech.name)) {
+      return {
+        id: 'enterprise_cms',
+        name: 'Enterprise CMS',
+        description: `Enterprise-grade CMS platform powered by ${tech.name}`
+      };
+    }
+    if (['Django', 'Laravel', 'Ruby on Rails'].includes(tech.name)) {
+      return {
+        id: 'mvc_framework',
+        name: `${tech.name} Application`,
+        description: `Server-rendered MVC application built with ${tech.name}`
+      };
+    }
+    if (tech.name === 'Webflow') {
+      return {
+        id: 'webflow_site',
+        name: 'Webflow Visual Platform',
+        description: 'Visually built site on Webflow platform'
+      };
+    }
+    if (tech.name === 'Squarespace') {
+      return {
+        id: 'squarespace_site',
+        name: 'Squarespace Platform',
+        description: 'All-in-one Squarespace website'
+      };
+    }
+    if (tech.name === 'Wix') {
+      return {
+        id: 'wix_site',
+        name: 'Wix Platform',
+        description: 'Drag-and-drop Wix website'
+      };
+    }
+  }
+
   return {
     id: 'unknown',
     name: 'Unknown Architecture',
@@ -580,7 +659,21 @@ async function generateSummary(technologies, architecture, cluster, security, pe
     return summary;
   }
 
-  let summary = `This website runs a ${architecture.name} architecture`;
+  // Determine the correct indefinite article and avoid doubling "architecture"
+  // when the name already contains it (e.g. "Unknown Architecture architecture").
+  const _archNameLC = architecture.name.toLowerCase();
+  const _article = /^[aeiou]/.test(architecture.name) ? 'an' : 'a';
+  let _archPhrase;
+  if (architecture.id === 'unknown') {
+    _archPhrase = 'an unclassified technology stack';
+  } else if (_archNameLC.includes('architecture') || _archNameLC.includes('application') ||
+             _archNameLC.includes('platform') || _archNameLC.includes('site') ||
+             _archNameLC.includes('commerce') || _archNameLC.includes('cms')) {
+    _archPhrase = `${_article} ${architecture.name}`;
+  } else {
+    _archPhrase = `${_article} ${architecture.name} architecture`;
+  }
+  let summary = `This website runs ${_archPhrase}`;
 
   if (names.includes('Next.js')) summary += ' built on Next.js with React';
   else if (names.includes('Nuxt.js')) summary += ' built on Nuxt.js with Vue.js';
@@ -680,6 +773,45 @@ async function generateSummary(technologies, architecture, cluster, security, pe
   return summary;
 }
 
+// ─── CLUSTER TO INDUSTRY MAPPING ────────────────────────────────────────────
+// Maps cluster archetype names to the correct industry_benchmarks table key.
+// The industry_benchmarks table is keyed by industry (SaaS, Media, Agency etc.)
+// not by cluster name. This mapping must be kept in sync with the seed data.
+//
+// FIX: 'Headless CMS' was incorrectly mapped to 'Media' — it is a SaaS/tech
+// pattern. 'Webflow Site' stays as 'Agency' for genuine Webflow sites but
+// the cluster confidence threshold fix in cluster.js prevents weak-signal
+// misclassifications from reaching this point with wrong cluster labels.
+
+const CLUSTER_INDUSTRY_MAP = {
+  'JAMstack React':        'SaaS',
+  'JAMstack Vue':          'SaaS',
+  'JAMstack Astro':        'Media',
+  'Modern SPA':            'SaaS',
+  'WordPress Standard':    'SMB',
+  'WordPress E-Commerce':  'E-Commerce',
+  'Shopify Commerce':      'E-Commerce',
+  'Headless Commerce':     'E-Commerce',
+  'Enterprise SaaS':       'Enterprise',
+  'Enterprise Commerce':   'Enterprise',
+  'Traditional CMS':       'Government',
+  'Headless CMS':          'SaaS',
+  'Static Site':           'Personal',
+  'Webflow Site':          'Agency',
+  'Squarespace Site':      'SMB',
+  'Wix Site':              'SMB',
+  'Ruby on Rails':         'SaaS',
+  'Django Python':         'SaaS',
+  'Laravel PHP':           'Agency',
+  'Unclassified Stack':    'SaaS',
+  'Low Signal':            'SaaS',
+};
+
+function mapClusterToIndustry(clusterName) {
+  if (!clusterName) return 'SaaS';
+  return CLUSTER_INDUSTRY_MAP[clusterName] || 'SaaS';
+}
+
 // ─── MASTER INTELLIGENCE FUNCTION ────────────────────────────────────────────
 
 async function generateIntelligence(technologies, security, performance, seo, infrastructure, cluster) {
@@ -706,10 +838,10 @@ async function generateIntelligence(technologies, security, performance, seo, in
       weaknesses
     ] = await Promise.all([
       findBestArchitecturePattern(technologies),
-      findIndustryBenchmark(cluster?.name || ''),
+      findIndustryBenchmark(mapClusterToIndustry(cluster?.name)),
       generateStrengthsFromKnowledgeBase(technologies, security, performance, seo, infrastructure),
       generateWeaknessesFromKnowledgeBase(technologies, security, performance, seo,
-        await findIndustryBenchmark(cluster?.name || ''))
+        await findIndustryBenchmark(mapClusterToIndustry(cluster?.name)))
     ]);
 
     const maturityScore = calculateMaturityScore(
