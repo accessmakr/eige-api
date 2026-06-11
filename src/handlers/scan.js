@@ -354,6 +354,9 @@ async function scanHandler(req, res) {
       timestamp,
       timestampFormatted: new Date(timestamp).toISOString(),
       qualityScore,
+      // responseSize is the raw byte length of the fetched HTML document.
+      // Used by the frontend to display the response size in the Performance panel.
+      responseSize: html ? html.length : 0,
       technologies,
       infrastructure,
       intelligence,
