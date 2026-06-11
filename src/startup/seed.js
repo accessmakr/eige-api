@@ -399,12 +399,9 @@ const PATTERNS = [
   {
     name: 'Supabase',
     category: 'Database',
-    // FIX: 'supabase.co' removed from html_patterns. Stripe.com and other
-    // sites contain the string "supabase.co" in page content (blog posts,
-    // comparison tables, footer links) without running on Supabase.
-    // Detection now relies exclusively on the JS SDK import (script_patterns)
-    // and the actual asset URL (url_patterns), both genuine-only signals.
-    html_patterns: [],
+    // supabase.co is the Supabase platform domain — domain-specific.
+    // REMOVED: bare 'supabase' — any page mentioning Supabase matches.
+    html_patterns: ['supabase\\.co'],
     header_patterns: [],
     script_patterns: ['@supabase/supabase-js','supabase\\.co/storage'],
     url_patterns: ['\\.supabase\\.co'],
