@@ -1449,9 +1449,14 @@ const FALLBACK_PATTERNS = [
   {
     name: 'Supabase',
     category: 'Database',
-    // REMOVED: bare 'supabase' — any page mentioning Supabase matches.
+    // FIX: 'supabase.co' removed entirely from html_patterns. Stripe.com
+    // and other large sites contain the literal string "supabase.co"
+    // somewhere in page content (blog posts, comparison tables, footer
+    // links, third-party scripts that reference it) without actually
+    // running on Supabase. Detection now relies exclusively on the JS SDK
+    // import (script_patterns) and the actual asset/API URL (url_patterns),
+    // both of which only appear when Supabase is genuinely the backend.
     html_patterns: [
-      'supabase\\.co'  // Supabase platform domain — domain-specific
     ],
     header_patterns: [],
     script_patterns: ['@supabase/supabase-js', 'supabase\\.co/storage'],
