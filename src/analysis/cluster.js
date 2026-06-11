@@ -386,34 +386,6 @@ async function classifyCluster(technologies) {
       };
     }
 
-    // FIX — LOW SIGNAL THRESHOLD: When the highest-confidence cluster match is
-    // below 20%, the classification is too weak to be trustworthy. Below this
-    // threshold the "best" match is often only marginally ahead of several
-    // other clusters (e.g. PayPal matched "Webflow Site" at 13% — barely
-    // above the next candidates). Confidently declaring a specific archetype
-    // at this confidence level cascades into wrong architecture and industry
-    // classifications downstream in intelligence.js. Instead, return a
-    // "Low Signal" result that is honest about the uncertainty while still
-    // surfacing the top candidates for reference.
-    const LOW_SIGNAL_THRESHOLD = 0.20;
-
-    if (best.confidence < LOW_SIGNAL_THRESHOLD) {
-      logger.info(`Cluster confidence too low for commitment: ${best.name} at ${best.confidence} (threshold ${LOW_SIGNAL_THRESHOLD}) — returning Low Signal`);
-
-      return {
-        id: 'low_signal',
-        name: 'Low Signal',
-        confidence: best.confidence,
-        description: `Detected technologies show some similarity to ${best.name} (${Math.round(best.confidence * 100)}% match) and other archetypes, but no single ecosystem pattern is a confident match. This usually means the site uses a custom or hybrid technology stack that does not closely follow common archetypes.`,
-        adjacentClusters: scores.slice(0, 4).map(s => s.name),
-        allScores: scores.slice(0, 5).map(s => ({
-          id: s.id,
-          name: s.name,
-          confidence: s.confidence
-        }))
-      };
-    }
-
     logger.info(`Cluster classified: ${best.name} — confidence: ${best.confidence}`);
 
     return {
