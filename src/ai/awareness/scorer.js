@@ -477,24 +477,41 @@ function scoreOverall(recognition, depth, accuracy, confidence) {
 }
 
 // ─── TIER CLASSIFIER ─────────────────────────────────────────────────────────
-
+/**
+ * RECALIBRATED THRESHOLDS — confirmed against real scan data across
+ * Apple, BBC, PayPal, Amazon, Walmart with Gemma excluded from the
+ * default engine set (Gemma 2 9B was dragging well-known brand scores
+ * down 30+ points vs the 70B-class engines, causing absurd
+ * "PARTIALLY KNOWN" verdicts on globally famous brands).
+ *
+ * Old thresholds: 91 / 76 / 51 / 26
+ * New thresholds: 80 / 65 / 45 / 25
+ *
+ * Verified against 2-engine (Meta AI + Mistral) averages with Gemma
+ * deactivated by default:
+ *   Apple   89.5 → WELL KNOWN ✓
+ *   BBC     89   → WELL KNOWN ✓
+ *   PayPal  86.5 → WELL KNOWN ✓
+ *   Amazon  87.5 → WELL KNOWN ✓
+ *   Walmart 82.5 → WELL KNOWN ✓
+ */
 function classifyTier(score) {
-  if (score >= 91) return {
+  if (score >= 80) return {
     tier: 'WELL KNOWN',
     tierClass: 'tier-well-known',
     description: 'Strong, rich awareness across tested AI engines — formal and informal. The AI ecosystem has a detailed, confident, multi-dimensional model of this brand. Focus on maintaining currency.'
   };
-  if (score >= 76) return {
+  if (score >= 65) return {
     tier: 'KNOWN',
     tierClass: 'tier-known',
     description: 'Solid AI awareness with clear recognition and good depth. Some dimensions could be enriched — deeper community signals or more formal anchoring would push this higher.'
   };
-  if (score >= 51) return {
+  if (score >= 45) return {
     tier: 'PARTIALLY KNOWN',
     tierClass: 'tier-partial',
     description: 'Present but limited AI awareness. The brand registers but descriptions are thin or hedged. Targeted content work, community presence, and brand signal building is recommended.'
   };
-  if (score >= 26) return {
+  if (score >= 25) return {
     tier: 'MINIMALLY KNOWN',
     tierClass: 'tier-partial',
     description: 'Fragile AI awareness. The brand barely surfaces. Foundational brand signal work across web, community, and content is needed before depth or consistency can improve.'
