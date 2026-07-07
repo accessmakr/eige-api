@@ -13,29 +13,31 @@ const {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const VALID_ENGINES = ['meta', 'google', 'mistral', 'chatgpt', 'claude', 'gemma'];
+const VALID_ENGINES = ['meta', 'google', 'mistral', 'chatgpt', 'claude', 'gemma', 'cerebras'];
 const MIN_ENGINES   = 1;
 const MAX_ENGINES   = 6;
 
 // ─── ENGINE DISPLAY NAMES ─────────────────────────────────────────────────────
 const ENGINE_DISPLAY_NAMES = {
-  meta:    'Meta AI',
-  google:  'Google AI',
-  mistral: 'Mistral',
-  chatgpt: 'ChatGPT',
-  claude:  'Claude',
-  gemma:   'Gemma'
+  meta:     'Meta AI',
+  google:   'Google AI',
+  mistral:  'Mistral',
+  chatgpt:  'ChatGPT',
+  claude:   'Claude',
+  gemma:    'Gemma',
+  cerebras: 'Cerebras'
 };
 
 // ─── FRONTEND KEY MAP ─────────────────────────────────────────────────────────
 // Maps internal engine keys to the keys the frontend renderResults() expects.
 const FRONTEND_KEY_MAP = {
-  meta:    'metaAI',
-  google:  'googleAI',
-  mistral: 'mistral',
-  chatgpt: 'chatgpt',
-  claude:  'claude',
-  gemma:   'gemma'
+  meta:     'metaAI',
+  google:   'googleAI',
+  mistral:  'mistral',
+  chatgpt:  'chatgpt',
+  claude:   'claude',
+  gemma:    'gemma',
+  cerebras: 'cerebras'
 };
 
 // ─── ERROR SANITISER ──────────────────────────────────────────────────────────
@@ -149,6 +151,15 @@ function sanitiseErrorMessage(rawError, engineLabel) {
     err.includes('529')
   ) {
     return `${engineLabel} is currently overloaded. Results from other engines are unaffected.`;
+  }
+
+  // ── Cerebras-specific ──
+  if (
+    err.includes('cerebras') ||
+    err.includes('wafer') ||
+    err.includes('cs3')
+  ) {
+    return `${engineLabel} is temporarily unavailable. Results from other engines are unaffected.`;
   }
 
   // ── Generic fallback — never expose raw error ──
