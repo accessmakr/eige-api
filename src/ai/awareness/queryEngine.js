@@ -334,7 +334,13 @@ async function queryCerebras(domain) {
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
     ],
-    max_tokens:  400,
+    // FIX: raised from 400 to 1200. Confirmed root cause via live
+    // diagnostic log — gpt-oss-120b (a reasoning-style model) can
+    // consume its entire token budget on internal reasoning before
+    // producing any visible output, returning empty content on a
+    // tight budget. 1200 leaves room for both reasoning and the
+    // actual structured answer.
+    max_tokens:  1200,
     temperature: 0.05,
     stream:      false
   };
@@ -351,11 +357,20 @@ async function queryCerebras(domain) {
 
   logger.info(`[Cerebras] Verification: ${verificationText.length} chars`);
 
-  // TEMPORARY DIAGNOSTIC — logs the full raw verification text so we can
-  // compare its label format against what parseVerificationBlock() expects
-  // (RECOGNITION:, ACCURATE_CLAIMS:, INFORMAL_SCORE:, etc.). Remove once
-  // the Cerebras 0/0/0 claim-count issue is diagnosed and fixed.
-  logger.info(`[Cerebras][DIAGNOSTIC] Raw verification text:\n${verificationText}`);
+  // FIX: permanent lightweight safeguard (replaces the temporary full-text
+  // diagnostic). If verification ever comes back empty again — a different
+  // model rotation, a future Cerebras catalog change, etc. — this logs the
+  // finish_reason so the cause (token budget vs. content filter vs. error)
+  // is immediately visible without needing another temporary diagnostic
+  // deploy. Does not dump full raw text into production logs on every scan.
+  if (!verificationText) {
+    const finishReason = verificationResult.data?.choices?.[0]?.finish_reason || 'unknown';
+    logger.warn(
+      `[Cerebras] Verification returned EMPTY content — model: ${model} | ` +
+      `finish_reason: ${finishReason}. Falling back to default scoring signals ` +
+      `for this engine on this scan.`
+    );
+  }
 
   return { primaryText, verificationText, error: null };
 }
