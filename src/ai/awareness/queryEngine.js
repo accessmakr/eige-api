@@ -39,13 +39,37 @@ const GROQ_GEMMA_PREFERENCE = [
   'llama-3.1-8b-instant'   // last resort if no Gemma model available
 ];
 
+// FIX: gemini-2.0-flash and gemini-2.0-flash-lite permanently
+// removed — confirmed shut down June 1, 2026 per Google's own docs.
+// They can still appear in the live /models catalog during Google's
+// shutdown grace period (which is what caused this bug — the old
+// list had 2.0-flash FIRST, and the resolver picks the first live
+// catalog match regardless of whether the model still functions).
+// Current lineup ordered by quality-per-free-request, confirmed
+// against Google's July 2026 free-tier documentation. Legacy 1.5/1.0
+// entries kept only as absolute last-resort fallbacks in case a
+// future catalog change removes all 2.5/3.x Flash variants at once.
 const GEMINI_PREFERENCE = [
-  'gemini-2.0-flash',
   'gemini-2.5-flash',
-  'gemini-2.0-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-3-flash',
+  'gemini-3.1-flash-lite',
   'gemini-1.5-flash',
   'gemini-1.0-pro'
 ];
+
+// FIX: defensive exclusion set — belt-and-suspenders alongside the
+// reordered list above. Even if a future preference-list edit
+// accidentally reintroduces a dead model ID, or Google's catalog
+// briefly lists a model whose real quota has already gone to zero,
+// this hard-blocks selection so a known-dead model is never chosen,
+// only ever skipped in favor of the next live candidate.
+const GEMINI_DEPRECATED_MODELS = new Set([
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash-001',
+  'gemini-2.0-flash-lite-001'
+]);
 
 // Cerebras preference list — llama-3.3-70b-versatile first since it's
 // the same quality as Groq 70B but on completely separate infrastructure
@@ -138,10 +162,17 @@ async function resolveGeminiModel(geminiKey) {
 
     const data = await response.json().catch(() => null);
 
+    // FIX: deprecated models filtered out of the live-catalog set
+    // itself, not just skipped in the preference list — this is the
+    // actual fix for the bug (Google's /models endpoint was still
+    // listing gemini-2.0-flash as "live" during its shutdown grace
+    // period, which is exactly why the old resolver kept selecting
+    // a model that returned limit: 0 on every real request).
     const liveGenerateModels = new Set(
       (data?.models || [])
         .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
         .map(m => (m.name || '').replace('models/', '').toLowerCase())
+        .filter(name => !GEMINI_DEPRECATED_MODELS.has(name))
     );
 
     logger.info(`[ModelResolver/Google] ${liveGenerateModels.size} Gemini generateContent models found`);
