@@ -351,6 +351,12 @@ async function queryCerebras(domain) {
 
   logger.info(`[Cerebras] Verification: ${verificationText.length} chars`);
 
+  // TEMPORARY DIAGNOSTIC — logs the full raw verification text so we can
+  // compare its label format against what parseVerificationBlock() expects
+  // (RECOGNITION:, ACCURATE_CLAIMS:, INFORMAL_SCORE:, etc.). Remove once
+  // the Cerebras 0/0/0 claim-count issue is diagnosed and fixed.
+  logger.info(`[Cerebras][DIAGNOSTIC] Raw verification text:\n${verificationText}`);
+
   return { primaryText, verificationText, error: null };
 }
 
