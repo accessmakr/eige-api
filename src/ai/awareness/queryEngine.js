@@ -9,6 +9,7 @@ const GROQ_MODELS_URL     = 'https://api.groq.com/openai/v1/models';
 const GEMINI_BASE_URL     = 'https://generativelanguage.googleapis.com/v1beta';
 const GEMINI_MODELS_URL   = `${GEMINI_BASE_URL}/models`;
 const OPENAI_API_URL      = 'https://api.openai.com/v1/chat/completions';
+const CEREBRAS_API_URL    = 'https://api.cerebras.ai/v1/chat/completions';
 const ANTHROPIC_URL       = 'https://api.anthropic.com/v1/messages';
 
 // ─── MODEL PREFERENCE LISTS ───────────────────────────────────────────────────
@@ -46,6 +47,17 @@ const GEMINI_PREFERENCE = [
   'gemini-1.0-pro'
 ];
 
+// Cerebras preference list — llama-3.3-70b-versatile first since it's
+// the same quality as Groq 70B but on completely separate infrastructure
+// so Groq quota exhaustion and Cerebras quota exhaustion can't happen
+// simultaneously. gpt-oss-120b confirmed live on free tier June 2026.
+const CEREBRAS_PREFERENCE = [
+  'llama-3.3-70b',        // Primary — same model family as Meta AI engine
+  'llama3.3-70b',          // alternate casing some Cerebras docs use
+  'llama-3.1-70b',        // Fallback
+  'gpt-oss-120b'          // Cerebras own model — confirmed free tier June 2026
+];
+
 // Static models — user-supplied keys, no auto-detect needed
 const STATIC_MODELS = {
   chatgpt: 'gpt-4o',
@@ -57,10 +69,11 @@ const STATIC_MODELS = {
 // NEW: gemma slot added alongside meta, mistral, google.
 
 const _resolvedModels = {
-  meta:    null,
-  mistral: null,
-  google:  null,
-  gemma:   null   // NEW
+  meta:     null,
+  mistral:  null,
+  google:   null,
+  gemma:    null,
+  cerebras: null
 };
 
 // ─── GROQ MODEL RESOLVER ──────────────────────────────────────────────────────
@@ -196,6 +209,149 @@ async function getGemmaModel(userGroqKey) {
       : GROQ_GEMMA_PREFERENCE[0];
   }
   return _resolvedModels.gemma;
+}
+
+// ─── CEREBRAS MODEL RESOLVER ──────────────────────────────────────────────────
+
+async function resolveCerebrasModel(cerebrasKey) {
+  try {
+    const response = await fetch('https://api.cerebras.ai/v1/models', {
+      method:  'GET',
+      headers: {
+        'Authorization': `Bearer ${cerebrasKey}`,
+        'Content-Type':  'application/json'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      logger.warn(`[ModelResolver/Cerebras] Models endpoint returned ${response.status} — using first preference`);
+      return CEREBRAS_PREFERENCE[0];
+    }
+
+    const data = await response.json().catch(() => null);
+    const liveIds = new Set(
+      (data?.data || []).map(m => (m.id || '').toLowerCase())
+    );
+
+    logger.info(`[ModelResolver/Cerebras] ${liveIds.size} Cerebras models found`);
+
+    for (const candidate of CEREBRAS_PREFERENCE) {
+      if (liveIds.has(candidate.toLowerCase())) {
+        logger.info(`[ModelResolver/Cerebras] Selected: ${candidate}`);
+        return candidate;
+      }
+    }
+
+    logger.warn(
+      `[ModelResolver/Cerebras] No preference matched. Falling back to: ${CEREBRAS_PREFERENCE[0]}. ` +
+      `Live: ${[...liveIds].slice(0, 8).join(', ')}`
+    );
+    return CEREBRAS_PREFERENCE[0];
+
+  } catch (err) {
+    logger.warn(`[ModelResolver/Cerebras] Resolution failed (${err.message}) — using: ${CEREBRAS_PREFERENCE[0]}`);
+    return CEREBRAS_PREFERENCE[0];
+  }
+}
+
+async function getCerebrasModel() {
+  if (!_resolvedModels.cerebras) {
+    const key = process.env.CEREBRAS_API_KEY;
+    _resolvedModels.cerebras = key
+      ? await resolveCerebrasModel(key)
+      : CEREBRAS_PREFERENCE[0];
+  }
+  return _resolvedModels.cerebras;
+}
+
+// ─── CEREBRAS ENGINE ──────────────────────────────────────────────────────────
+/**
+ * Query Cerebras AI.
+ *
+ * Cerebras uses the OpenAI-compatible chat completions format so
+ * the request shape is identical to Groq. The key difference is
+ * infrastructure — Cerebras runs on wafer-scale silicon with
+ * extremely fast inference, and its quota pool is independent from
+ * Groq's, so a Groq rate-limit event cannot cascade to Cerebras.
+ *
+ * @param {string} domain
+ */
+async function queryCerebras(domain) {
+  const cerebrasKey = process.env.CEREBRAS_API_KEY;
+
+  if (!cerebrasKey) {
+    logger.error('CEREBRAS_API_KEY not set — cannot query Cerebras');
+    return { primaryText: '', verificationText: '', error: 'CEREBRAS_API_KEY not configured' };
+  }
+
+  const model = await getCerebrasModel();
+  logger.info(`[Cerebras] Using model: ${model}`);
+
+  const headers = {
+    'Content-Type':  'application/json',
+    'Authorization': `Bearer ${cerebrasKey}`
+  };
+
+  logger.info(`[Cerebras] Sending awareness probe — domain: ${domain}`);
+
+  const primaryPayload = {
+    model,
+    messages:    [{ role: 'user', content: buildAwarenessPrompt(domain) }],
+    max_tokens:  MAX_TOKENS,
+    temperature: TEMPERATURE,
+    top_p:       0.92,
+    stream:      false
+  };
+
+  const primaryResult = await safeFetch(
+    CEREBRAS_API_URL,
+    { method: 'POST', headers, body: JSON.stringify(primaryPayload) },
+    'Cerebras'
+  );
+
+  if (!primaryResult.ok) {
+    if (primaryResult.error && /decommission|deprecated|no longer supported|model not found/i.test(primaryResult.error)) {
+      logger.warn('[Cerebras] Model appears unavailable — clearing cache for re-resolution');
+      _resolvedModels.cerebras = null;
+    }
+    return { primaryText: '', verificationText: '', error: primaryResult.error };
+  }
+
+  const primaryText = (primaryResult.data?.choices?.[0]?.message?.content || '').trim();
+
+  if (!primaryText) {
+    logger.warn('[Cerebras] Empty primary response');
+    return { primaryText: '', verificationText: '', error: 'Empty response from Cerebras' };
+  }
+
+  logger.info(`[Cerebras] Primary response: ${primaryText.length} chars`);
+
+  const verificationPayload = {
+    model,
+    messages: [
+      { role: 'user',      content: buildAwarenessPrompt(domain) },
+      { role: 'assistant', content: primaryText },
+      { role: 'user',      content: buildVerificationPrompt(primaryText) }
+    ],
+    max_tokens:  400,
+    temperature: 0.05,
+    stream:      false
+  };
+
+  const verificationResult = await safeFetch(
+    CEREBRAS_API_URL,
+    { method: 'POST', headers, body: JSON.stringify(verificationPayload) },
+    'Cerebras'
+  );
+
+  const verificationText = verificationResult.ok
+    ? (verificationResult.data?.choices?.[0]?.message?.content || '').trim()
+    : '';
+
+  logger.info(`[Cerebras] Verification: ${verificationText.length} chars`);
+
+  return { primaryText, verificationText, error: null };
 }
 
 // ─── REQUEST PARAMETERS ───────────────────────────────────────────────────────
@@ -831,6 +987,13 @@ async function queryAllEngines(domain, engines, keys = {}) {
 
       case 'claude':
         promise = queryAnthropic(domain, keys.anthropic || '');
+        break;
+
+      case 'cerebras':
+        // Cerebras runs entirely on the server key — no user key
+        // override here since Cerebras is a server-side fallback
+        // engine, not a user-supplied key engine like ChatGPT/Claude
+        promise = queryCerebras(domain);
         break;
 
       default:
