@@ -409,7 +409,11 @@ async function queryCerebras(domain) {
 // ─── REQUEST PARAMETERS ───────────────────────────────────────────────────────
 
 const TIMEOUT_MS  = 35000;
-const MAX_TOKENS  = 1200;
+// FIX: raised from 1200 to 2000. Confirmed live that Google AI's
+// primary response was truncated mid-sentence at the old ceiling —
+// this constant is shared across every engine's primary probe, so
+// raising it gives uniform extra headroom to all six engines equally.
+const MAX_TOKENS  = 2000;
 const TEMPERATURE = 0.4;
 
 // ─── PRIMARY AWARENESS PROBE ──────────────────────────────────────────────────
@@ -437,6 +441,8 @@ Cover as many of these as you genuinely have knowledge on. You do not need to co
 — Your honest assessment of how well-known this brand is across the internet and AI ecosystem
 
 If you have strong knowledge, write several paragraphs. If your knowledge is thin or uncertain, say so clearly and say what you do and do not know. Do not fabricate or speculate — but do not suppress real knowledge just because it came from informal sources.
+
+Write in plain prose only — no markdown formatting, no headers, no bold text, no bullet points, no numbered lists. Just natural paragraphs of running text. This keeps your full token budget available for actual content rather than formatting.
 
 Be honest about your confidence at the end: how certain are you about what you wrote, on a scale of 1 to 10?`;
 }
@@ -565,6 +571,23 @@ async function queryGroq(domain, modelResolver, engineLabel, userGroqKey) {
     return { primaryText: '', verificationText: '', error: 'Empty response from model' };
   }
 
+  // FIX: truncation detection on a NON-empty primary response — this
+  // is the exact failure mode that hit Google AI (finishReason:
+  // MAX_TOKENS, but the model still returned partial visible text
+  // that read as a normal answer until it silently stopped mid-
+  // sentence). Previously this was invisible in logs since the
+  // response wasn't empty. Now flagged clearly so a low Depth score
+  // caused by truncation is distinguishable from genuinely thin
+  // model knowledge.
+  const primaryFinishReason = primaryResult.data?.choices?.[0]?.finish_reason;
+  if (primaryFinishReason === 'length') {
+    logger.warn(
+      `[${engineLabel}] Primary response TRUNCATED at token limit ` +
+      `(${primaryText.length} chars delivered before cutoff). ` +
+      `Scoring will proceed on the partial text.`
+    );
+  }
+
   logger.info(`[${engineLabel}] Primary response: ${primaryText.length} chars`);
 
   const verificationPayload = {
@@ -574,7 +597,11 @@ async function queryGroq(domain, modelResolver, engineLabel, userGroqKey) {
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
     ],
-    max_tokens:  400,
+    // FIX: raised from 400 to 1200, matching the fix already proven
+    // necessary for Cerebras — proactively closing the same bug
+    // class here rather than waiting for it to strike Meta AI or
+    // Mistral in production.
+    max_tokens:  1200,
     temperature: 0.05,
     stream:      false
   };
@@ -668,6 +695,24 @@ async function queryGemini(domain, userGeminiKey) {
     };
   }
 
+  // FIX: CONFIRMED ROOT CAUSE via live scan — Google AI's primary
+  // response was cut off mid-sentence ("Who typically uses it and
+  // why" then nothing) while finishReason was MAX_TOKENS, but the
+  // response was NOT empty so the check above never caught it.
+  // Gemini 2.5's "thinking" models are documented to sometimes
+  // consume output-token budget on internal reasoning before
+  // finishing the visible answer, producing exactly this partial-
+  // cutoff pattern. Now flagged explicitly rather than silently
+  // scored as if it were a complete, deliberately thin answer.
+  const primaryFinishReason = primaryResult.data?.candidates?.[0]?.finishReason;
+  if (primaryFinishReason === 'MAX_TOKENS') {
+    logger.warn(
+      `[Google AI] Primary response TRUNCATED at token limit ` +
+      `(${primaryText.length} chars delivered before cutoff). ` +
+      `Scoring will proceed on the partial text.`
+    );
+  }
+
   logger.info(`[Google AI] Primary response: ${primaryText.length} chars`);
 
   const verificationPayload = {
@@ -676,7 +721,10 @@ async function queryGemini(domain, userGeminiKey) {
       { role: 'model', parts: [{ text: primaryText }] },
       { role: 'user',  parts: [{ text: buildVerificationPrompt(primaryText) }] }
     ],
-    generationConfig: { ...generationConfig, temperature: 0.05, maxOutputTokens: 400 }
+    // FIX: raised from 400 to 1200 — the same thinking-token-budget
+    // issue that truncates the primary response can just as easily
+    // empty out the shorter, tighter-budget verification call.
+    generationConfig: { ...generationConfig, temperature: 0.05, maxOutputTokens: 1200 }
   };
 
   const verificationResult = await safeFetch(
@@ -736,6 +784,17 @@ async function queryOpenAI(domain, userOpenAIKey) {
     return { primaryText: '', verificationText: '', error: 'Empty response from GPT-4o' };
   }
 
+  // FIX: same truncation-detection pattern applied for parity with
+  // the free engines, now that this bug class is confirmed real.
+  const primaryFinishReason = primaryResult.data?.choices?.[0]?.finish_reason;
+  if (primaryFinishReason === 'length') {
+    logger.warn(
+      `[ChatGPT] Primary response TRUNCATED at token limit ` +
+      `(${primaryText.length} chars delivered before cutoff). ` +
+      `Scoring will proceed on the partial text.`
+    );
+  }
+
   logger.info(`[ChatGPT] Primary response: ${primaryText.length} chars`);
 
   const verificationPayload = {
@@ -745,7 +804,9 @@ async function queryOpenAI(domain, userOpenAIKey) {
       { role: 'assistant', content: primaryText },
       { role: 'user',      content: buildVerificationPrompt(primaryText) }
     ],
-    max_tokens:  400,
+    // FIX: raised from 400 to 1200 for consistency with every other
+    // engine's verification call, closing the same bug class here too.
+    max_tokens:  1200,
     temperature: 0.05
   };
 
@@ -805,11 +866,26 @@ async function queryAnthropic(domain, userAnthropicKey) {
     return { primaryText: '', verificationText: '', error: 'Empty response from Claude' };
   }
 
+  // FIX: same truncation-detection pattern, adapted for Anthropic's
+  // stop_reason field (values: end_turn, max_tokens, stop_sequence),
+  // which differs from the finish_reason/finishReason naming used
+  // by the OpenAI-compatible and Gemini APIs.
+  const primaryStopReason = primaryResult.data?.stop_reason;
+  if (primaryStopReason === 'max_tokens') {
+    logger.warn(
+      `[Claude] Primary response TRUNCATED at token limit ` +
+      `(${primaryText.length} chars delivered before cutoff). ` +
+      `Scoring will proceed on the partial text.`
+    );
+  }
+
   logger.info(`[Claude] Primary response: ${primaryText.length} chars`);
 
   const verificationPayload = {
     model:       STATIC_MODELS.claude,
-    max_tokens:  400,
+    // FIX: raised from 400 to 1200 for consistency with every other
+    // engine's verification call.
+    max_tokens:  1200,
     temperature: 0.05,
     messages:    [
       { role: 'user',      content: buildAwarenessPrompt(domain) },
