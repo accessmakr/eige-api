@@ -653,10 +653,26 @@ async function queryGemini(domain, userGeminiKey) {
 
   const headers = { 'Content-Type': 'application/json' };
 
+  // FIX: Gemini 2.5 Flash has "thinking" enabled by default, and
+  // thinking tokens are counted against maxOutputTokens — confirmed
+  // root cause of the truncated-response bug seen in production.
+  // thinkingBudget: 0 disables thinking entirely (confirmed via
+  // Google's official docs), which also means fewer total tokens
+  // consumed per call — a net quota win, not a cost.
+  //
+  // MAX_TOKENS_GEMINI kept separate from the shared MAX_TOKENS
+  // constant and raised higher (3000 vs. 2000) purely as a safety
+  // net: several developers have reported thinkingBudget: 0 being
+  // silently ignored on some model/SDK combinations, so this
+  // ensures real headroom remains even if thinking does fire
+  // despite being disabled.
+  const MAX_TOKENS_GEMINI = 3000;
+
   const generationConfig = {
     temperature:     TEMPERATURE,
     topP:            0.92,
-    maxOutputTokens: MAX_TOKENS
+    maxOutputTokens: MAX_TOKENS_GEMINI,
+    thinkingConfig:  { thinkingBudget: 0 }
   };
 
   const primaryPayload = {
@@ -721,9 +737,12 @@ async function queryGemini(domain, userGeminiKey) {
       { role: 'model', parts: [{ text: primaryText }] },
       { role: 'user',  parts: [{ text: buildVerificationPrompt(primaryText) }] }
     ],
-    // FIX: raised from 400 to 1200 — the same thinking-token-budget
-    // issue that truncates the primary response can just as easily
-    // empty out the shorter, tighter-budget verification call.
+    // FIX: raised from 400 to 1200, and thinking explicitly disabled
+    // here too (inherited from the spread of `generationConfig` above,
+    // which now includes thinkingConfig: { thinkingBudget: 0 }) — the
+    // same thinking-token-budget issue that truncates the primary
+    // response can just as easily empty out the shorter, tighter-
+    // budget verification call.
     generationConfig: { ...generationConfig, temperature: 0.05, maxOutputTokens: 1200 }
   };
 
